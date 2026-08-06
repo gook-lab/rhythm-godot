@@ -1,0 +1,81 @@
+[gd_scene load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://scripts/Main.gd" id="1_main"]
+[ext_resource type="Script" path="res://scripts/PlanetPair.gd" id="2_pair"]
+[ext_resource type="Script" path="res://scripts/Planet.gd" id="3_planet"]
+[ext_resource type="Script" path="res://scripts/Judge.gd" id="4_judge"]
+[ext_resource type="Resource" path="res://charts/demo.tres" id="5_chart"]
+
+[node name="Main" type="Node2D"]
+script = ExtResource("1_main")
+chart = ExtResource("5_chart")
+
+[node name="World" type="Node2D" parent="."]
+
+[node name="Camera2D" type="Camera2D" parent="World"]
+position_smoothing_enabled = true
+position_smoothing_speed = 8.0
+
+[node name="Path" type="Line2D" parent="World"]
+width = 10.0
+default_color = Color(0.35, 0.38, 0.48, 1)
+joint_mode = 2
+begin_cap_mode = 2
+end_cap_mode = 2
+antialiased = true
+
+[node name="PlanetPair" type="Node2D" parent="World"]
+script = ExtResource("2_pair")
+
+[node name="PlanetA" type="Node2D" parent="World/PlanetPair"]
+script = ExtResource("3_planet")
+color = Color(0.98, 0.42, 0.33, 1)
+
+[node name="PlanetB" type="Node2D" parent="World/PlanetPair"]
+script = ExtResource("3_planet")
+color = Color(0.35, 0.72, 0.98, 1)
+
+[node name="JudgmentPopup" type="Label" parent="World"]
+offset_right = 220.0
+offset_bottom = 34.0
+theme_override_font_sizes/font_size = 26
+
+[node name="Judge" type="Node" parent="."]
+script = ExtResource("4_judge")
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="CalibrationPanel" type="PanelContainer" parent="UI"]
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 16.0
+offset_top = -104.0
+offset_right = 336.0
+offset_bottom = -16.0
+grow_vertical = 0
+
+[node name="VBox" type="VBoxContainer" parent="UI/CalibrationPanel"]
+
+[node name="OffsetLabel" type="Label" parent="UI/CalibrationPanel/VBox"]
+text = "오프셋 +0 ms"
+
+[node name="OffsetSlider" type="HSlider" parent="UI/CalibrationPanel/VBox"]
+custom_minimum_size = Vector2(288, 0)
+min_value = -150.0
+max_value = 150.0
+step = 1.0
+
+[node name="Hint" type="Label" parent="UI/CalibrationPanel/VBox"]
+theme_override_font_sizes/font_size = 12
+text = "판정이 Late 로 치우치면 + 방향으로"
+
+[node name="DebugOverlay" type="PanelContainer" parent="UI"]
+offset_left = 16.0
+offset_top = 16.0
+offset_right = 496.0
+offset_bottom = 116.0
+
+[node name="DebugLabel" type="Label" parent="UI/DebugOverlay"]
+theme_override_font_sizes/font_size = 14
+text = "..."

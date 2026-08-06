@@ -1,0 +1,41 @@
+; rhythm-godot — ADOFAI형 원버튼 리듬게임
+;
+; 설정 하나하나가 판정 산포에 직접 영향을 준다.
+; 계측 단계(README 참조)에서 on/off 비교표를 만들고 이긴 조합을 여기 고정한다.
+; 지금 값은 "재보기 전 기본값"이지 확정값이 아니다.
+
+config_version=5
+
+[application]
+
+config/name="rhythm-godot"
+config/description="ADOFAI형 원버튼 리듬게임. 타일 각도가 곧 대기 박자 수."
+run/main_scene="res://scenes/Main.tscn"
+config/features=PackedStringArray("4.7", "Forward Plus")
+
+[autoload]
+
+; 스크립트가 아니라 '씬' autoload 다.
+;   1. @export(warmup_ms)가 인스펙터에 붙는다.
+;   2. AudioStreamPlayer 를 자기 자식으로 소유하므로
+;      reload_current_scene() 해도 해제된 노드를 가리키지 않는다.
+AudioClock="*res://scenes/AudioClock.tscn"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/stretch/mode="canvas_items"
+
+[input_devices]
+
+; 기본값 OFF. 켜면 입력 이벤트를 프레임당 여러 번 플러시해서
+; _input() 이 물리적 입력 시점에 더 가깝게 붙는다.
+; 공식 문서는 이득을 주로 "FPS가 이상적이지 않을 때"로 설명하므로
+; 켜라가 아니라 재보고 정하는 항목이다. 계측 비교표의 1~2행.
+buffering/agile_event_flushing=false
+
+[rendering]
+
+renderer/rendering_method="forward_plus"
+environment/defaults/default_clear_color=Color(0.055, 0.06, 0.08, 1)

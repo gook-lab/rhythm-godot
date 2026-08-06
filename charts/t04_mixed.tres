@@ -1,0 +1,12 @@
+[gd_resource type="Resource" script_class="Chart" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/Chart.gd" id="1_chart"]
+[ext_resource type="AudioStream" path="res://assets/click_120.wav" id="2_audio"]
+
+[resource]
+script = ExtResource("1_chart")
+bpm = 120
+angles = PackedFloat32Array(0, 0, 270, 180, 180, 270, 180, 0, 0)
+start_offset_ms = 0
+audio = ExtResource("2_audio")
+title = "04 혼합"

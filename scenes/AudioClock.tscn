@@ -1,0 +1,8 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/AudioClock.gd" id="1_clock"]
+
+[node name="AudioClock" type="Node"]
+script = ExtResource("1_clock")
+
+[node name="AudioStreamPlayer" type="AudioStreamPlayer" parent="."]
