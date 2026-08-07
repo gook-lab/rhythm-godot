@@ -1,8 +1,9 @@
 extends Control
 
-## 곡 선택. charts/ 의 .tres 를 스캔해 목록으로 보여준다.
+## 곡 선택. charts/ 의 .tres 를 스캔해 목록으로 보여주고,
+## Records 의 곡별 기록(최고 랭크·정확도·진행도)을 함께 붙인다.
 ##
-## 조작: ↑↓ 이동 · Enter/Space 시작 · ESC 종료
+## 조작: ↑↓ 이동 · Enter/Space 시작 · K 판정키 설정 · ESC 종료
 ##
 ## 익스포트 빌드 함정: PCK 안에서는 리소스가 "foo.tres.remap" 으로 보일 수 있다.
 ## 확장자를 자를 때 .remap 을 먼저 벗긴다.
@@ -12,12 +13,17 @@ const CHART_DIR := "res://charts"
 var _entries: Array = []   # [{path, title, bpm, tiles, secs}]
 var _sel := 0
 
+## 판정키 설정 모드. true 인 동안 키 입력은 전부 바인딩 토글로 간다.
+var _binding := false
+
 ## 테스트 시임. 헤드리스 테스트가 씬 전환을 억제하고 선택 로직만 검증한다 —
 ## change_scene 은 테스트 러너 자신(current_scene)을 갈아치워 테스트가 죽기 때문.
 var suppress_scene_change := false
 
 @onready var _list: VBoxContainer = $Margin/VBox/List
 @onready var _info: Label = $Margin/VBox/Info
+@onready var _keybind_panel: PanelContainer = $KeybindPanel
+@onready var _keys_label: Label = $KeybindPanel/Margin/VBox/Keys
 
 
 func _ready() -> void:
@@ -69,7 +75,7 @@ func _rebuild() -> void:
 		var l := Label.new()
 		var mark := "▶ " if i == _sel else "   "
 		var extra := "  🐇" if e.speed else ""
-		l.text = "%s%s%s" % [mark, e.title, extra]
+		l.text = "%s%s%s%s" % [mark, e.title, extra, _record_tail(e.path)]
 		l.add_theme_font_size_override("font_size", 24)
 		if i == _sel:
 			l.modulate = Color(1.15, 1.05, 0.7)
@@ -80,8 +86,29 @@ func _rebuild() -> void:
 		_info.text = "차트가 없다 — python3 tools/make_charts.py"
 		return
 	var e: Dictionary = _entries[_sel]
-	_info.text = "BPM %.0f   ·   타일 %d   ·   %d:%02d" % [
-		e.bpm, e.tiles, int(e.secs) / 60, int(e.secs) % 60]
+	_info.text = "BPM %.0f   ·   타일 %d   ·   %d:%02d\n%s" % [
+		e.bpm, e.tiles, int(e.secs) / 60, int(e.secs) % 60, _record_line(e.path)]
+
+
+## 목록 행 끝에 붙는 기록 요약. 클리어했으면 랭크가, 못 했으면 진행도가 성적표다.
+func _record_tail(path: String) -> String:
+	var r := Records.get_record(path)
+	if r.is_empty():
+		return ""
+	if int(r.get("clears", 0)) > 0:
+		return "   —   %s %.2f%%" % [r.get("best_rank", "-"), float(r.get("best_acc", 0.0))]
+	return "   —   진행 %.0f%%" % float(r.get("best_progress", 0.0))
+
+
+## 선택된 곡의 기록 상세(Info 두 번째 줄).
+func _record_line(path: String) -> String:
+	var r := Records.get_record(path)
+	if r.is_empty():
+		return "기록 없음 — 첫 도전"
+	return "최고 %s %.2f%%   ·   콤보 %d   ·   진행 %.0f%%   ·   클리어 %d / 플레이 %d" % [
+		r.get("best_rank", "-"), float(r.get("best_acc", 0.0)),
+		int(r.get("best_combo", 0)), float(r.get("best_progress", 0.0)),
+		int(r.get("clears", 0)), int(r.get("plays", 0))]
 
 
 func _input(event: InputEvent) -> void:
@@ -89,6 +116,9 @@ func _input(event: InputEvent) -> void:
 		return
 	var k := event as InputEventKey
 	if not k.pressed or k.echo:
+		return
+	if _binding:
+		_binding_input(k.keycode)
 		return
 	match k.keycode:
 		KEY_UP:
@@ -102,5 +132,35 @@ func _input(event: InputEvent) -> void:
 				GameState.selected_chart = _entries[_sel].path
 				if not suppress_scene_change:
 					get_tree().change_scene_to_file("res://scenes/Main.tscn")
+		KEY_K:
+			_binding = true
+			_keybind_panel.visible = true
+			_refresh_keys()
 		KEY_ESCAPE:
 			get_tree().quit()
+
+
+## 판정키 설정 모드의 키 처리. 아무 키나 누르면 토글 —
+## '치고 싶은 키를 그냥 쳐 본다'가 곧 설정이다.
+func _binding_input(code: int) -> void:
+	match code:
+		KEY_ENTER, KEY_KP_ENTER, KEY_ESCAPE:
+			_binding = false
+			_keybind_panel.visible = false
+			Records.save()
+		KEY_BACKSPACE:
+			Records.bound_keys = PackedInt32Array()
+			_refresh_keys()
+		_:
+			if Records.toggle_key(code):
+				_refresh_keys()
+
+
+func _refresh_keys() -> void:
+	if Records.bound_keys.is_empty():
+		_keys_label.text = "(전부)\n예약키(ESC·R)와 수식키를 뺀 모든 키가 판정키다"
+	else:
+		var names := PackedStringArray()
+		for c in Records.bound_keys:
+			names.append(OS.get_keycode_string(c))
+		_keys_label.text = "  ".join(names)

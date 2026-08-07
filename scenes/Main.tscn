@@ -70,6 +70,16 @@ script = ExtResource("5_score")
 
 [node name="UI" type="CanvasLayer" parent="."]
 
+[node name="SongProgress" type="ProgressBar" parent="UI"]
+anchor_right = 1.0
+offset_bottom = 4.0
+grow_horizontal = 2
+max_value = 100.0
+value = 0.0
+show_percentage = false
+mouse_filter = 2
+modulate = Color(1.15, 1.05, 0.7, 0.9)
+
 [node name="HealthBar" type="ProgressBar" parent="UI"]
 anchor_left = 0.5
 anchor_right = 0.5
@@ -202,6 +212,12 @@ offset_top = 16.0
 offset_right = -16.0
 offset_bottom = 140.0
 grow_horizontal = 0
+
+[node name="ProgressLabel" type="Label" parent="UI/HUD"]
+theme_override_font_sizes/font_size = 20
+horizontal_alignment = 2
+modulate = Color(1.15, 1.05, 0.7, 1)
+text = ""
 
 [node name="ScoreLabel" type="Label" parent="UI/HUD"]
 theme_override_font_sizes/font_size = 26

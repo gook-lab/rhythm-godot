@@ -37,6 +37,7 @@ func _init() -> void:
 	t_speed_tiles()
 	t_twirl()
 	t_health()
+	t_records()
 
 	print("\n%d passed, %d failed" % [_pass, _fail])
 	quit(_fail)
@@ -506,3 +507,57 @@ func t_health() -> void:
 	s.reset()
 	ok(is_equal_approx(s.health, Score.HEALTH_MAX) and not s.started, "reset 이 체력·started 복구")
 	s.free()
+
+
+func t_records() -> void:
+	# autoload 이지만 --script 모드 검증을 위해 직접 인스턴스한다.
+	# save_path 를 갈아끼워 실제 기록 파일(user://records.json)을 건드리지 않는다.
+	print("\nRecords — 기록 갱신 · 랭크 서열 · 저장 왕복 · 판정키")
+	const TEST_PATH := "user://test_records.json"
+	if FileAccess.file_exists(TEST_PATH):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(TEST_PATH))
+	var r: Node = load("res://scripts/Records.gd").new()
+	r.save_path = TEST_PATH
+	r.load_file()
+
+	# 첫 플레이(미클리어 40%) -> 클리어 -> 하향 플레이
+	var imp: Dictionary = r.record_play("c1", 62.0, "D", 10, 40.0, false)
+	ok(not imp.has("first_clear"), "미클리어는 first_clear 없음")
+	imp = r.record_play("c1", 91.5, "A", 55, 100.0, true)
+	ok(imp.has("first_clear"), "첫 클리어 감지")
+	ok(imp.has("acc") and absf(float(imp.acc) - 62.0) < 1e-4, "정확도 갱신 시 이전값 반환")
+	ok(imp.has("combo") and int(imp.combo) == 10, "콤보 갱신 시 이전값 반환")
+	imp = r.record_play("c1", 70.0, "C", 20, 100.0, true)
+	ok(imp.is_empty(), "하향 플레이는 갱신 없음")
+
+	# 랭크는 정확도와 독립이다 — P(전부 일반 Perfect)는 정확도가 낮아도 SS 위.
+	r.record_play("c2", 99.2, "SS", 100, 100.0, true)
+	imp = r.record_play("c2", 99.0, "P", 90, 100.0, true)
+	ok(imp.has("rank") and str(imp.rank) == "SS", "P 가 SS 를 이긴다 (정확도 무관)")
+	var rec: Dictionary = r.get_record("c2")
+	ok(str(rec.best_rank) == "P" and absf(float(rec.best_acc) - 99.2) < 1e-4,
+		"랭크·정확도 최고치가 독립으로 유지")
+
+	# 저장 -> 새 인스턴스로 로드 (왕복)
+	var r2: Node = load("res://scripts/Records.gd").new()
+	r2.save_path = TEST_PATH
+	r2.load_file()
+	var rec2: Dictionary = r2.get_record("c1")
+	ok(int(rec2.plays) == 3 and int(rec2.clears) == 2, "왕복: plays 3 · clears 2")
+	ok(absf(float(rec2.best_acc) - 91.5) < 1e-4, "왕복: best_acc 유지")
+	ok(float(rec2.best_progress) >= 100.0 - 1e-4, "왕복: best_progress 유지")
+
+	# 판정키: 기본은 전부, 바인딩하면 그 키만, 예약키는 어느 쪽에서도 안 된다
+	ok(r.is_judgment_key(KEY_SPACE), "기본: SPACE 허용")
+	ok(not r.is_judgment_key(KEY_ESCAPE), "예약키 ESC 거부")
+	ok(not r.toggle_key(KEY_R), "예약키 R 바인딩 불가")
+	r.toggle_key(KEY_D)
+	r.toggle_key(KEY_F)
+	ok(r.is_judgment_key(KEY_F) and not r.is_judgment_key(KEY_SPACE),
+		"바인딩 후: F 허용 · SPACE 거부")
+	r.toggle_key(KEY_F)
+	ok(not r.is_judgment_key(KEY_F), "토글 해제")
+
+	r.free()
+	r2.free()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(TEST_PATH))

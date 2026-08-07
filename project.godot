@@ -21,6 +21,8 @@ config/features=PackedStringArray("4.7", "Forward Plus")
 ;      reload_current_scene() 해도 해제된 노드를 가리키지 않는다.
 AudioClock="*res://scenes/AudioClock.tscn"
 GameState="*res://scripts/GameState.gd"
+; 곡별 기록·판정키 바인딩·오프셋의 영속화 (user://records.json).
+Records="*res://scripts/Records.gd"
 
 [display]
 

@@ -68,6 +68,8 @@ const COUNTDOWN_BEATS := 4
 @onready var _r_break: Label = $UI/ResultPanel/Margin/VBox/Breakdown
 @onready var _health: ProgressBar = $UI/HealthBar
 @onready var _pause_panel: PanelContainer = $UI/PausePanel
+@onready var _song_progress: ProgressBar = $UI/SongProgress
+@onready var _hud_progress: Label = $UI/HUD/ProgressLabel
 @onready var _hitsound: AudioStreamPlayer = $HitSound
 @onready var _misssound: AudioStreamPlayer = $MissSound
 
@@ -105,6 +107,13 @@ var _shake_t := 0.0
 ## 이 값이 1.0 에 오래 붙어 있으면 행성이 얼어 있다는 뜻이다.
 var _last_u := 0.0
 
+## 곡 선택 화면을 거친 실플레이인가. 테스트 러너들은 chart 를 직접 주입하고
+## selected_chart 를 비워 둔다 — 그 경로에선 기록·바인딩·저장 오프셋을
+## 일절 건드리지 않는다. 사용자의 저장 파일이 테스트 결과를 흔들지도
+## (바인딩이 SPACE 를 막으면 InputRunner 가 깨진다), 테스트 플레이가
+## 기록을 오염시키지도 않게 하기 위해서다.
+var _real_play := false
+
 
 func _ready() -> void:
 	# 곡 선택 화면이 고른 차트가 있으면 그걸 쓴다. 없으면(테스트·직접 실행) 인스펙터 값.
@@ -112,6 +121,7 @@ func _ready() -> void:
 		var c: Chart = load(GameState.selected_chart)
 		if c != null:
 			chart = c
+			_real_play = true
 	if chart == null or not chart.is_valid():
 		push_error("Main.chart 가 비었거나 불완전하다. 인스펙터에서 .tres 를 물려라.")
 		set_process(false)
@@ -126,6 +136,10 @@ func _ready() -> void:
 	_song_len_ms = chart.audio.get_length() * 1000.0
 	_draw_path()
 
+	# 저장된 캘리브레이션을 복원한다 — 잰 값을 매번 다시 재게 하면
+	# 캘리브레이션이 아니라 고문이다. (connect 전이라 신호는 안 난다)
+	if _real_play:
+		_offset_slider.value = Records.offset_ms
 	_offset_slider.value_changed.connect(_on_offset_changed)
 	_on_offset_changed(_offset_slider.value)
 	# 순서 중요: Main 이 '끊기기 직전 콤보'를 알아야 하므로 Score 보다 먼저 받는다.
@@ -157,6 +171,8 @@ func _restart() -> void:
 	_planets.clear_trails()
 	_path.clear_impacts()
 	_result.visible = false
+	_song_progress.value = 0.0
+	_hud_progress.text = ""
 	_countdown.text = ""
 	_verdict_label.text = ""
 	_combo_label.text = ""
@@ -333,9 +349,14 @@ func _input(event: InputEvent) -> void:
 		return
 	if _paused or _finished:
 		return
-	# 얼불춤처럼 거의 모든 키를 판정키로 받는다 — 양손 교타가 가능해야
-	# 빠른 구간에서 손맛이 산다. 예약키(R/ESC)와 수식키만 뺀다.
-	if k.keycode in [KEY_SHIFT, KEY_CTRL, KEY_ALT, KEY_META, KEY_CAPSLOCK, KEY_TAB]:
+	# 판정키 필터. 기본(바인딩 없음)은 얼불춤처럼 거의 모든 키 — 양손 교타가
+	# 가능해야 빠른 구간에서 손맛이 산다. 곡 선택 화면의 K 메뉴에서 키를
+	# 지정했으면 그 키들만 받는다. 테스트·직접 실행은 항상 '전부 허용'이다 —
+	# 러너들이 사용자의 저장 바인딩에 좌우되면 안 된다.
+	if _real_play:
+		if not Records.is_judgment_key(k.keycode):
+			return
+	elif k.keycode in Records.NEVER_JUDGE:
 		return
 	# 입력 즉시 히트사운드 — 판정보다 빠른 피드백. 곡의 클릭과 내 입력음의
 	# 어긋남이 곧 내 오차라서, 이게 손맛 캘리브레이션의 핵심 도구다.
@@ -422,10 +443,12 @@ func _on_song_finished(failed := false) -> void:
 
 	var acc := _score.accuracy()
 	var rank := "F" if failed else _score.rank()
+	var prog := clampf(_progress_pct(), 0.0, 100.0)
+	_song_progress.value = prog
 	_r_rank.text = rank
 	_r_acc.text = "정확도 %.2f%%" % acc
 	if failed:
-		_r_headline.text = "실패 — 체력 소진"
+		_r_headline.text = "실패 — 진행 %.0f%%" % prog
 		_r_headline.modulate = Color(1.2, 0.45, 0.45)
 		_r_rank.modulate = Color(1.2, 0.45, 0.45)
 	else:
@@ -442,10 +465,29 @@ func _on_song_finished(failed := false) -> void:
 			_score.count_of(Judge.Verdict.LATE_PERFECT),
 			_score.count_of(Judge.Verdict.VERY_LATE),
 			_score.count_of(Judge.Verdict.TOO_LATE)]
-		+ "최대 콤보 %d    ·    타일 %d / %d\n" % [
-			_score.max_combo, _score.total, _judged_total]
+		+ "최대 콤보 %d    ·    타일 %d / %d    ·    진행 %.0f%%\n" % [
+			_score.max_combo, _score.total, _judged_total, prog]
 		+ "판정 오차 평균 %+.1fms   표준편차 %.1fms" % [s.mean, s.sd]
 	)
+	# 실플레이만 기록에 남긴다(테스트 오염 방지 — _real_play 주석 참고).
+	# 무엇이 갱신됐는지가 반환되므로 결과 화면에 '신기록'을 바로 보여줄 수 있다.
+	if _real_play:
+		var imp: Dictionary = Records.record_play(
+			GameState.selected_chart, acc, rank, _score.max_combo, prog, not failed)
+		var marks := PackedStringArray()
+		if imp.has("first_clear"):
+			marks.append("첫 클리어")
+		if imp.has("rank") and str(imp.rank) != "-":
+			marks.append("랭크 %s → %s" % [imp.rank, rank])
+		if imp.has("acc"):
+			marks.append("정확도 신기록 (이전 %.2f%%)" % float(imp.acc))
+		if imp.has("combo") and int(imp.combo) > 0:
+			marks.append("콤보 신기록 (이전 %d)" % int(imp.combo))
+		# 진행도는 미클리어 상태에서만 의미 있는 지표다 — 클리어했으면 항상 100.
+		if imp.has("progress") and float(imp.progress) > 0.0 and prog < 100.0:
+			marks.append("진행 신기록 (이전 %.0f%%)" % float(imp.progress))
+		if not marks.is_empty():
+			_r_break.text += "\n\n🏆 " + "  ·  ".join(marks)
 	_result.visible = true
 
 	print("[결과] %s%s | 표본 %d | 평균 %+.1fms | 표준편차 %.1fms | 역행 %d회 최대 %.3fms"
@@ -465,10 +507,26 @@ static func _headline_for(acc: float) -> String:
 func _on_offset_changed(v: float) -> void:
 	AudioClock.user_offset_ms = v
 	_offset_label.text = "오프셋 %+.0f ms" % v
+	# 드래그 중 스텝마다 저장된다. 파일이 1KB 미만이라 비용은 없고,
+	# '슬라이더를 만졌으면 저장됐다'는 단순한 규칙이 flush 타이밍 버그를 없앤다.
+	if _real_play:
+		Records.offset_ms = v
+		Records.save()
 
 
 # ------------------------------------------------------------------ HUD
+## 곡 진행도(%). 판정이 끝난 타일 기준이지 시간 기준이 아니다 —
+## 얼불춤의 진행도가 이 정의고, 인트로·아웃트로의 무타일 구간이 %를 부풀리지 않는다.
+func _progress_pct() -> float:
+	if _judged_total <= 0:
+		return 0.0
+	return 100.0 * float(_score.total) / float(_judged_total)
+
+
 func _update_hud(t: float) -> void:
+	var prog := _progress_pct()
+	_song_progress.value = prog
+	_hud_progress.text = "%.0f%%" % prog
 	_hud_score.text = _score.summary_line()
 	_health.value = _score.health
 	_health.modulate = Color(1.0, 0.45, 0.45) if _score.health < 30.0 \
