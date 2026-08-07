@@ -78,10 +78,18 @@ def spin_at(twirls, tile):
     return s
 
 
+TURN_EPS_DEG = 1.0  # ChartRuntime.TURN_EPS_DEG 와 같아야 한다
+
+
 def beats_for_tile_spin(prev, cur, spin):
     d = (cur - (prev + 180.0)) if spin >= 0 else ((prev + 180.0) - cur)
     s = norm(d)
-    return (360.0 if abs(s) < 1e-9 else s) / 180.0
+    # U턴은 sweep 0 = 360 이고 그 값이 정확히 wrap 경계에 얹혀 있다.
+    # 여유 없이 한쪽만 보면 float 오차 0.001도에 0박/2박이 뒤집힌다
+    # (ChartRuntime.beats_for_tile 의 주석 참조 — 실측 6.5초 어긋남).
+    if s < TURN_EPS_DEG or s > 360.0 - TURN_EPS_DEG:
+        s = 360.0
+    return s / 180.0
 
 
 def hops_of(ang, twirls=()):

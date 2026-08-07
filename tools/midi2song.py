@@ -3,7 +3,11 @@
 MIDI -> 곡(wav) + 채보(.tres). AI 음악 경로의 본선.
 
   python3 tools/midi2song.py assets/test_song.mid
-  python3 tools/midi2song.py foo.mid --name mysong --title "제목" --melody-track 2
+  python3 tools/midi2song.py ~/Downloads/midis/*.mid --name aisong --melody vocal
+
+단일 파일도, '스템 묶음'(악기별 MIDI 여러 개)도 받는다 — AI 서비스(Mureka 등)의
+MIDI 내보내기는 보통 후자다(bass/drums/guitar/piano/synth/vocal, PPQ 제각각).
+파일·PPQ 가 몇 개든 '박 도메인' 모델 하나로 통일한 뒤 같은 파이프라인을 태운다.
 
 왜 이 경로인가 (2026-08 조사 결론):
   AI 오디오 생성은 전부 미세 템포 드리프트가 있고(0.5% 면 3분에 ~900ms),
@@ -12,15 +16,19 @@ MIDI -> 곡(wav) + 채보(.tres). AI 음악 경로의 본선.
   드리프트 0 · 온셋 검출 불필요. AI 에겐 작곡(MIDI)만 시키고
   오디오는 여기서 샘플 단위 정확하게 렌더한다.
 
-게임 제약과의 정합 (전부 이 파일이 강제한다):
-  1. 온셋은 1/12 박 격자 위 -> 양자화 + 오차 보고
-  2. 타일 간격 (0, 2] 박 -> 2박 걸음으로 채움 타일 삽입(로그)
-  3. 코드(동시 노트) -> 온셋 1개로
-  4. MIDI 템포 변경 = 토끼/달팽이 타일. 단 게임은 '홉당 상수 배속'이라
-     변경 지점에 타일이 반드시 있어야 한다 -> 없으면 강제 삽입.
-     단, 전사(오디오→MIDI) MIDI 는 박마다 템포를 찍으므로 그 전에
-     측정 잡음을 걷어낸다 -> midilib.dejitter_tempos (--tempo-tol)
-  5. 첫 온셋 앞에 카운트인 4박 확보 -> 부족하면 전체를 시프트(오디오도 같이)
+전사(오디오→MIDI) 스템에서 배운 것 (전부 여기서 처리한다):
+  - 템포가 '박마다' 찍혀 있다(실측 317엔트리, 20ms 격자 반올림 잡음).
+    -> midilib.dejitter_tempos 가 시간 보존으로 걷어낸다 (--tempo-tol).
+  - 노트가 격자 밖이다(연주 전사). 채보만 양자화하면 오디오와 어긋나므로
+    '렌더할 노트 자체'를 같은 1/12 격자로 스냅한다. 둘은 정의상 일치한다.
+  - 드럼은 ch9 이지만 파일명(drums.mid)으로도 판별한다.
+  - 멜로디가 곡 한참 뒤에 진입하기도 한다(보컬 48박 등).
+    -> 채보는 항상 카운트인 직후(4박)에 시작하고, 첫 멜로디까지는
+       2박 걸음 채움 타일로 잇는다. 죽은 인트로가 없다.
+
+게임 제약과의 정합:
+  1/12 격자 · 간격 (0,2] 박(채움 타일) · 코드 합침 · 카운트인 시프트 ·
+  템포 변경 지점 타일 강제 삽입(홉당 상수 배속이라 필수).
 
 검증 2단:
   - Python: 템포 맵 정답 벽시계 vs .tres 를 읽어 되계산한 히트타임 (< 0.01ms)
@@ -109,7 +117,6 @@ def render_hat(buf, t0, amp=0.22, open_=False):
         buf[j] += noise() * math.exp(-(i / SR) * (26.0 if open_ else 90.0)) * amp
 
 
-# GM 드럼 -> 우리 신스
 def render_drum(buf, t0, pitch, vel):
     a = vel / 100.0
     if pitch in (35, 36):
@@ -122,26 +129,149 @@ def render_drum(buf, t0, pitch, vel):
         render_hat(buf, t0, 0.22 * a)
 
 
-# ---------------------------------------------------------------- 파이프라인
-def pick_melody(tracks, override):
-    """멜로디 트랙 선택: 지정 없으면 '드럼 아닌 트랙 중 평균 음높이 최고'.
+def track_voice(label, is_melody):
+    """라벨 -> (파형, 진폭, 듀티). 스템 파일명 관행을 그대로 쓴다."""
+    l = label.lower()
+    if is_melody:
+        return ("sq", 0.24, 0.5)
+    if "bass" in l:
+        return ("tri", 0.30, 0.5)
+    if "guitar" in l:
+        return ("sq", 0.13, 0.25)
+    if "piano" in l:
+        return ("tri", 0.20, 0.5)
+    return ("tri", 0.15, 0.5)
 
-    리드가 보통 최상성부라는 관행에 기댄 휴리스틱이다. 틀리면 --melody-track 으로.
+
+# ---------------------------------------------------------------- 모델
+def load_model(paths):
+    """N개 MIDI(PPQ 제각각) -> 박 도메인 통합 모델.
+
+    track: {label, drums, notes: [(beat, dur_beats, pitch, vel)]}
+    템포는 첫 파일 기준. 나머지 파일과 박 도메인에서 대조해 다르면 경고한다
+    (스템 실측: 6파일 전부 일치했다 — 같은 곡의 내보내기니까 당연해야 한다).
     """
-    if override is not None:
-        return override
-    best, best_key = None, None
+    tracks = []
+    tempo_ref, tempo_src = None, ""
+    for path in paths:
+        d = parse_smf(path)
+        ppq = float(d["ppq"])
+        base = os.path.splitext(os.path.basename(path))[0]
+        tmap = [(t / ppq, round(b, 3)) for t, b in d["tempos"]]
+        if tempo_ref is None:
+            tempo_ref, tempo_src = tmap, base
+        elif tmap[:64] != tempo_ref[:64]:
+            print("  !! %s 의 템포 맵이 %s 와 다르다 — %s 것을 쓴다"
+                  % (base, tempo_src, tempo_src))
+        for tr in d["tracks"]:
+            if not tr["notes"]:
+                continue
+            ch9 = sum(1 for n in tr["notes"] if n.ch == 9)
+            drums = ch9 > len(tr["notes"]) // 2 or "drum" in base.lower()
+            label = base if not tr["name"] else "%s:%s" % (base, tr["name"])
+            tracks.append({
+                "label": label,
+                "drums": drums,
+                "notes": [(n.tick / ppq, n.dur / ppq, n.pitch, n.vel)
+                          for n in tr["notes"]],
+            })
+    assert tracks, "노트가 있는 트랙이 하나도 없다"
+    tempos_beats = [(b, v) for b, v in tempo_ref]
+    return tracks, tempos_beats
+
+
+TIGHT_MS = 120.0    # 이보다 촘촘하면 판정창(±110ms)이 이웃과 붙어 사실상 못 친다
+IDEAL_RATE = 1.5    # 초당 타일 수의 이상점. 얼불춤 체감 밀도가 대략 이 근처다
+
+
+def dominant_bpm(tempos, lo_beat, hi_beat):
+    """채보 구간에서 '가장 오래 유지되는' 템포. Chart.bpm 의 기준이 된다.
+
+    첫 온셋의 템포를 쓰면 안 된다는 걸 실측이 보여줬다 (Mureka 곡 2번):
+    곡 맨 앞에 300bpm 짜리 짧은 구간이 잡혀 있어서, 그걸 기준으로 삼자
+    나머지 전곡이 x0.393312 달팽이 타일 하나로 표현됐다. 의미가 거꾸로고
+    (118bpm 곡인데 '300bpm에서 계속 느려진 곡'이 된다), 288개 타일이 전부
+    그 반올림된 배율을 곱해 히트타임 오차가 0.157ms 로 벌어졌다.
+
+    가장 오래 가는 템포를 기준으로 삼으면 대다수 타일의 배율이 정확히 1.0 이
+    되어 오차가 사라지고, 짧은 구간만 토끼/달팽이 타일이 된다.
+    """
+    held = {}
+    for k, (beat, bpm) in enumerate(tempos):
+        nxt = tempos[k + 1][0] if k + 1 < len(tempos) else hi_beat
+        span = min(nxt, hi_beat) - max(beat, lo_beat)
+        if span > 0:
+            held[bpm] = held.get(bpm, 0.0) + span / bpm  # 박이 아니라 '시간'으로 센다
+    if not held:
+        return tempos[0][1]
+    return max(held.items(), key=lambda kv: kv[1])[0]
+
+
+def track_stats(tr, tmap, dur):
+    """트랙 하나를 '채보로 썼을 때' 어떤 물건이 나오는지 (0~1 지표들)."""
+    ons = sorted(set(q12(n[0]) for n in tr["notes"]))
+    if len(ons) < 2:
+        return None
+    sec = [tmap.sec_at(o) for o in ons]
+    gaps = [sec[i] - sec[i - 1] for i in range(1, len(sec))]
+    return {
+        "onsets": len(ons),
+        "span": (sec[-1] - sec[0]) / dur,                            # 곡을 덮는 비율
+        "tight": sum(1 for g in gaps if g * 1000.0 < TIGHT_MS) / len(gaps),
+        "rate": len(ons) / dur,
+    }
+
+
+def melody_score(st):
+    """채보로서의 점수. 높을수록 좋다.
+
+    라벨('vocal')만 믿으면 안 된다는 걸 실측이 보여줬다 (2026-08-07, Mureka 11곡):
+    전사기가 보컬을 거의 못 잡은 곡이 있어 vocal 스템의 span 이 0.00~0.05 였다.
+    그걸 고르면 172초 곡에 타일 10개짜리 채보가 나온다. 반대로 synth 리드는
+    간격의 68%가 120ms 미만이라 사람이 칠 수 없었다.
+
+    그래서 이름이 아니라 '나올 채보'로 고른다:
+      span   곡 전체를 덮어야 한다. 반쯤 덮으면 나머지는 죽은 시간이다.
+      tight  못 치는 간격의 비율만큼 그대로 깎는다.
+      rate   너무 성기면 지루하고 너무 빽빽하면 못 친다. 로그 대칭으로 본다
+             (0.75/s 와 3.0/s 가 1.5/s 에서 같은 거리).
+    """
+    density = math.exp(-((math.log(st["rate"] / IDEAL_RATE)) ** 2) / (2 * 0.7 ** 2))
+    return st["span"] * (1.0 - st["tight"]) * density
+
+
+def pick_melody(tracks, want, tmap, dur, verbose=True):
+    """멜로디 트랙 선택. --melody 로 라벨 부분일치 또는 인덱스, 없으면 점수 최고."""
+    if want is not None:
+        if want.isdigit():
+            return int(want)
+        for i, tr in enumerate(tracks):
+            if want.lower() in tr["label"].lower():
+                return i
+        raise SystemExit("--melody %r 에 맞는 트랙이 없다. 목록: %s"
+                         % (want, [t["label"] for t in tracks]))
+
+    scored = []
     for i, tr in enumerate(tracks):
-        pitched = [n for n in tr["notes"] if n.ch != 9]
-        if not pitched:
-            continue
-        key = (sum(n.pitch for n in pitched) / len(pitched), len(pitched))
-        if best_key is None or key > best_key:
-            best, best_key = i, key
-    assert best is not None, "음정 트랙이 하나도 없다"
-    return best
+        st = track_stats(tr, tmap, dur)
+        # 드럼은 멜로디가 아니다. 리듬은 이미 모든 타일이 표현하고 있다.
+        scored.append((i, st, 0.0 if (st is None or tr["drums"]) else melody_score(st)))
+    best = max(scored, key=lambda s: s[2])
+    assert best[2] > 0.0, "채보로 쓸 만한 트랙이 없다"
+    if verbose:
+        for i, st, sc in scored:
+            mark = "▶" if i == best[0] else " "
+            if st is None:
+                print("    %s[%d] %-24s 노트 부족" % (mark, i, tracks[i]["label"][:24]))
+            else:
+                print("    %s[%d] %-24s %s점수 %.3f (온셋 %d · 덮음 %.2f · 촘촘 %.2f · %.2f타/초)"
+                      % (mark, i, tracks[i]["label"][:24],
+                         "드럼 " if tracks[i]["drums"] else "", sc,
+                         st["onsets"], st["span"], st["tight"], st["rate"]))
+    return best[0]
 
 
+# ---------------------------------------------------------------- 검증
 def replay_hit_times_from_tres(tres_path):
     """생성된 .tres 를 읽어 ChartRuntime.hit_times_ms 를 그대로 되계산한다.
 
@@ -178,10 +308,12 @@ def replay_hit_times_from_tres(tres_path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("midi")
+    ap.add_argument("midi", nargs="+")
     ap.add_argument("--name", default=None)
     ap.add_argument("--title", default=None)
-    ap.add_argument("--melody-track", type=int, default=None)
+    ap.add_argument("--melody", "--melody-track", dest="melody", default=None,
+                    help="멜로디 트랙: 라벨 부분일치 또는 인덱스 "
+                         "(기본: vocal 라벨, 없으면 최고 성부)")
     ap.add_argument("--no-fill", action="store_true",
                     help="2박 초과 공백을 채우지 않고 에러로 처리")
     ap.add_argument("--tempo-tol", type=float, default=0.10,
@@ -189,40 +321,42 @@ def main():
                          "(전사 MIDI 대응, 0 이면 원본 템포맵 그대로)")
     args = ap.parse_args()
 
-    name = args.name or os.path.splitext(os.path.basename(args.midi))[0]
+    name = args.name or os.path.splitext(os.path.basename(args.midi[0]))[0]
     title = args.title or name
 
-    data = parse_smf(args.midi)
-    ppq = data["ppq"]
-    mel_i = pick_melody(data["tracks"], args.melody_track)
-    print("MIDI: %s · PPQ %d · 트랙 %d개 · 멜로디 = 트랙 %d (%s)"
-          % (args.midi, ppq, len(data["tracks"]), mel_i,
-             data["tracks"][mel_i]["name"] or "이름 없음"))
-
-    # ── 온셋: 양자화 + 코드 합침 ─────────────────────────────────
-    mel_notes = [n for n in data["tracks"][mel_i]["notes"] if n.ch != 9]
-    raw = sorted(n.tick / ppq for n in mel_notes)
-    quant_err = max((abs(b - q12(b)) for b in raw), default=0.0)
-    onsets = sorted(set(q12(b) for b in raw))
-    if quant_err > 1e-9:
-        print("  양자화: 최대 오차 %.4f박 (1/12 격자로 스냅)" % quant_err)
-    if len(onsets) < len(raw):
-        print("  코드 합침: 노트 %d -> 온셋 %d" % (len(raw), len(onsets)))
+    tracks, tempos_raw = load_model(args.midi)
+    src_end_beat = max(n[0] + n[1] for tr in tracks for n in tr["notes"])
 
     # ── 템포 잡음 제거 (전사 MIDI 대응) ─────────────────────────
-    # 오디오→MIDI 전사기(Mureka 스템 등)는 박마다 템포를 찍는다. 그대로 두면
-    # 변경마다 속도 타일이 박히고, 홉 중간 변경은 게임 모델로 표현조차 안 된다.
-    src_end_beat = max((n.tick + n.dur) / ppq
-                       for tr in data["tracks"] for n in tr["notes"])
-    tempos_raw = [(t / ppq, bpm) for t, bpm in data["tempos"]]
-    # 전사 MIDI 는 노트가 끝난 뒤에도 템포를 계속 찍는다 — 구간 적분이
-    # 마지막 이벤트를 넘어서도록 끝박을 넉넉히 잡는다.
-    tempos_clean, drift_s = dejitter_tempos(
-        tempos_raw, max(src_end_beat, tempos_raw[-1][0] + 1.0), args.tempo_tol)
+    tempos_clean, drift_s = dejitter_tempos(tempos_raw, src_end_beat, args.tempo_tol)
     if len(tempos_clean) < len(tempos_raw):
         print("  템포 정리: 이벤트 %d개 -> %d개 (측정 잡음 · 전사 대비 최대 %.1fms)"
               % (len(tempos_raw), len(tempos_clean), drift_s * 1000.0))
         print("     오디오도 같은 템포맵으로 렌더하므로 채보-오디오 오차는 0이다.")
+
+    tmap_pick = TempoMap(tempos_clean)
+    print("입력 %d파일 -> 트랙 %d개" % (len(args.midi), len(tracks)))
+    mel_i = pick_melody(tracks, args.melody, tmap_pick, tmap_pick.sec_at(src_end_beat))
+    print("  멜로디 = %s" % tracks[mel_i]["label"])
+
+    # ── 렌더-채보 동시 양자화 ────────────────────────────────────
+    # 연주 전사는 노트가 격자 밖이다. 채보만 양자화하면 오디오와 어긋나므로
+    # '렌더할 노트 자체'를 같은 격자로 스냅한다. 둘은 정의상 일치하게 된다.
+    snap_max = 0.0
+    for tr in tracks:
+        snapped = []
+        for b, d, p, v in tr["notes"]:
+            qb = q12(b)
+            snap_max = max(snap_max, abs(b - qb))
+            snapped.append((qb, d, p, v))
+        tr["notes"] = snapped
+    if snap_max > 1e-9:
+        print("  양자화: 전 트랙 1/12 격자 스냅, 최대 이동 %.4f박" % snap_max)
+
+    raw_n = len(tracks[mel_i]["notes"])
+    onsets = sorted(set(n[0] for n in tracks[mel_i]["notes"]))
+    if len(onsets) < raw_n:
+        print("  코드 합침: 노트 %d -> 온셋 %d" % (raw_n, len(onsets)))
 
     # ── 카운트인 시프트 (오디오·템포·온셋을 전부 같이 민다) ─────
     shift = max(0.0, LEAD_BEATS - onsets[0])
@@ -230,9 +364,20 @@ def main():
         (b + shift, bpm) for b, bpm in tempos_clean if b > 0]
     if shift > 0:
         onsets = [q12(o + shift) for o in onsets]
+        for tr in tracks:
+            tr["notes"] = [(b + shift, d, p, v) for b, d, p, v in tr["notes"]]
         print("  카운트인: 전체 +%.4g박 시프트 (첫 온셋 %.4g박)" % (shift, onsets[0]))
     tmap = TempoMap(tempos)
-    base_bpm = tmap.bpm_at(onsets[0])
+
+    # ── 채보는 항상 카운트인 직후(4박)에 시작한다 ────────────────
+    # 멜로디가 곡 한참 뒤에 진입해도(보컬 스템 실측 48박 = 22초) 죽은
+    # 인트로를 만들지 않는다 — 첫 멜로디까지 2박 걸음 채움 타일이 아래
+    # 공백 채움 루프에서 자동으로 놓인다.
+    intro_fills = 0
+    if onsets[0] > LEAD_BEATS + 1e-9:
+        intro_fills = 1  # 실제 개수는 공백 채움 루프가 센다 — 시드만 기록
+        onsets.insert(0, LEAD_BEATS)
+    base_bpm = dominant_bpm(tempos, onsets[0], onsets[-1])
 
     # ── 템포 변경 지점에 타일 강제 삽입 ──────────────────────────
     # 게임은 홉당 상수 배속이라, 변경이 홉 '중간'에 오면 표현이 안 된다.
@@ -260,11 +405,13 @@ def main():
             filled.append(nxt)
         out.append(o)
     onsets = out
-    for f in filled:
-        print("  채움 타일: %.4g박 (2박 초과 공백 — 지속음 위를 밟는다)" % f)
+    if filled:
+        print("  채움 타일 %d개 (2박 초과 공백%s — 지속음/반주 위를 밟는다)"
+              % (len(filled), " · 인트로 포함" if intro_fills else ""))
 
     gaps = [onsets[i] - onsets[i - 1] for i in range(1, len(onsets))]
-    assert all(0 < g <= MAX_HOP + 1e-9 for g in gaps), "간격 위반: %s" % [g for g in gaps if not (0 < g <= MAX_HOP + 1e-9)]
+    assert all(0 < g <= MAX_HOP + 1e-9 for g in gaps), \
+        "간격 위반: %s" % [g for g in gaps if not (0 < g <= MAX_HOP + 1e-9)]
     assert all(abs(g * GRID - round(g * GRID)) < 1e-6 for g in gaps), "격자 위반"
 
     # ── 속도 표시 + 시작점 (전부 벽시계는 템포 맵이 정답) ────────
@@ -278,46 +425,38 @@ def main():
             speed_marks.append([q12(beat), mult])
             prev_mult = mult
     start_offset_ms = (tmap.sec_at(onsets[0]) - 60.0 / base_bpm) * 1000.0
-    # 실전 발견(위키피디아 샘플): 멀티트랙 MIDI 는 멜로디가 곡 한참 뒤에
-    # 진입하기도 한다(기타가 176박 = 87.5초). 변환은 정확하지만 그 동안
-    # 플레이어가 할 게 없다. 자동으로 자르는 건 월권이라 경고만 한다.
-    if tmap.sec_at(onsets[0]) > 12.0:
-        print("  !! 첫 타일이 %.1f초 — 인트로가 길다. 다른 트랙을 멜로디로 쓰거나"
-              % tmap.sec_at(onsets[0]))
-        print("     (--melody-track N) MIDI 를 잘라서 다시 뽑는 것을 고려하라.")
 
     # ── 렌더 ────────────────────────────────────────────────────
-    end_beat = max(
-        max((n.tick + n.dur) / ppq for tr in data["tracks"] for n in tr["notes"]) + shift,
-        onsets[-1])
+    end_beat = max(onsets[-1],
+                   max(n[0] + n[1] for tr in tracks for n in tr["notes"]))
     total = int((tmap.sec_at(end_beat) + 1.0) * SR)
+    n_notes = sum(len(tr["notes"]) for tr in tracks)
+    print("  렌더: %.1f초 · %d트랙 %d노트 (순수 파이썬 — 긴 곡은 수십 초 걸린다)"
+          % (total / SR, len(tracks), n_notes))
     buf = [0.0] * total
-    for i, tr in enumerate(data["tracks"]):
-        for n in tr["notes"]:
-            t0 = tmap.sec_at(n.tick / ppq + shift)
-            if n.ch == 9:
-                render_drum(buf, t0, n.pitch, n.vel)
+    for i, tr in enumerate(tracks):
+        wave, amp, duty = track_voice(tr["label"], i == mel_i)
+        for b, d, p, v in tr["notes"]:
+            t0 = tmap.sec_at(b)
+            if tr["drums"]:
+                render_drum(buf, t0, p, v)
             else:
-                dur_s = tmap.sec_at((n.tick + n.dur) / ppq + shift) - t0
-                if i == mel_i:
-                    render_tone(buf, t0, dur_s, n.pitch, "sq", 0.24 * n.vel / 96.0)
-                else:
-                    render_tone(buf, t0, dur_s, n.pitch, "tri", 0.30 * n.vel / 96.0)
+                dur_s = tmap.sec_at(b + d) - t0
+                render_tone(buf, t0, dur_s, p, wave, amp * v / 96.0, duty)
     buf = normalize(buf)
 
     os.makedirs(os.path.join(HERE, "assets"), exist_ok=True)
-    wav = os.path.join(HERE, "assets", "%s.wav" % name)
-    write_wav(wav, buf)
+    write_wav(os.path.join(HERE, "assets", "%s.wav" % name), buf)
 
     meta = {
         "bpm": base_bpm,
         "sample_rate": SR,
         "duration_s": len(buf) / SR,
-        "source_midi": os.path.basename(args.midi),
+        "source_midi": [os.path.basename(p) for p in args.midi],
         "melody_onsets_beats": onsets,
         "speed_marks_beats": speed_marks,
         "start_offset_ms": start_offset_ms,
-        "quant_max_err_beats": quant_err,
+        "quant_max_err_beats": snap_max,
         "inserted_speed_tiles": inserted,
         "filled_gap_tiles": filled,
     }
@@ -327,9 +466,10 @@ def main():
     # 정답 벽시계 (템포 맵 직접 적분) — 검증의 기준
     expected = [start_offset_ms] + [tmap.sec_at(o) * 1000.0 for o in onsets]
     json.dump({"hit_times_ms": expected, "chart": "res://charts/%s.tres" % name},
-              open(os.path.join(HERE, "assets", "%s.expected.json" % name), "w"), indent=1)
+              open(os.path.join(HERE, "assets", "%s.expected.json" % name), "w"),
+              indent=1)
 
-    print("%s.wav  %.1fs · 기준 %g bpm · 온셋 %d · 속도표시 %d"
+    print("%s.wav  %.1fs · 기준 %.6g bpm · 온셋 %d · 속도표시 %d"
           % (name, len(buf) / SR, base_bpm, len(onsets), len(speed_marks)))
 
     # ── 채보 생성 ───────────────────────────────────────────────
@@ -337,7 +477,8 @@ def main():
 
     # ── 검증 1: 파일을 읽어 되계산한 히트타임 vs 템포 맵 정답 ────
     replay = replay_hit_times_from_tres(os.path.join(HERE, "charts", "%s.tres" % name))
-    assert len(replay) == len(expected), "타일 수 불일치 %d != %d" % (len(replay), len(expected))
+    assert len(replay) == len(expected), \
+        "타일 수 불일치 %d != %d" % (len(replay), len(expected))
     worst = max(abs(a - b) for a, b in zip(replay, expected))
     print("검증(Python): .tres 되계산 vs 템포맵 정답 — 최대 오차 %.6f ms  %s"
           % (worst, "PASS" if worst < 0.01 else "FAIL"))

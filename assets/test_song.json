@@ -1,8 +1,10 @@
 {
  "bpm": 120.0,
  "sample_rate": 48000,
- "duration_s": 20.1333125,
- "source_midi": "test_song.mid",
+ "duration_s": 20.133333333333333,
+ "source_midi": [
+  "test_song.mid"
+ ],
  "melody_onsets_beats": [
   4.0,
   5.0,
@@ -42,7 +44,7 @@
  "speed_marks_beats": [
   [
    20.0,
-   1.5000015000015
+   1.5
   ],
   [
    36.0,

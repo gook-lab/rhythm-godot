@@ -31,6 +31,10 @@ extends RefCounted
 ##   90도 꺾임             -> sweep 270  -> 1.5박
 
 
+## U턴 판정 여유(도). beats_for_tile 의 주석이 이 값을 고른 이유를 설명한다.
+const TURN_EPS_DEG := 1.0
+
+
 ## 각도를 0~360 으로 정규화한다.
 ## 주의: fmod 는 음수를 음수로 돌려준다. 반드시 fposmod 를 쓸 것.
 ##   fmod(-90, 360)    == -90   (틀림)
@@ -48,8 +52,18 @@ static func normalize360(deg: float) -> float:
 static func beats_for_tile(prev: float, cur: float, spin: int = 1) -> float:
 	var sweep := normalize360(cur - (prev + 180.0)) if spin >= 0 \
 		else normalize360((prev + 180.0) - cur)
-	if is_zero_approx(sweep):
-		sweep = 360.0  # 제자리 = 한 바퀴 (U턴)
+	# U턴(제자리)은 sweep 이 정확히 0 = 360 인 경우다. 그런데 이 값은
+	# fposmod 의 경계 위에 정확히 얹혀 있어서, 각도에 0.001도만 오차가 섞여도
+	# 0.0006(-> 0.0박) 과 359.9994(-> 2.0박) 로 갈린다. 같은 U턴이 정반대가 된다.
+	#
+	# is_zero_approx(1e-6) 로는 한쪽 끝밖에 못 잡는다. 실측(2026-08-07, Mureka
+	# 스템 317타일): 엔진(float32)은 0박, Python(float64)은 2박으로 갈려
+	# 히트타임이 6.5초 어긋났다 — 테스트 채보는 각도가 정확해서 안 드러났다.
+	#
+	# 1.0도는 float 오차(~0.001도)보다 1000배 크고, 격자의 최소 홉(15도 = 1/12박)
+	# 보다 15배 작다. 그 사이엔 정상적인 값이 존재하지 않는다.
+	if sweep < TURN_EPS_DEG or sweep > 360.0 - TURN_EPS_DEG:
+		sweep = 360.0
 	return sweep / 180.0
 
 

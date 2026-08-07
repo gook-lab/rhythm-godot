@@ -119,6 +119,14 @@ def main():
 
     ok(dejitter_tempos(jit, 64.0, tol=0.0)[0] == jit, "tol=0 이면 원본 그대로")
 
+    # 전사 MIDI 는 노트가 끝난 뒤에도 템포를 계속 찍는다. 끝박이 마지막
+    # 이벤트보다 앞일 때 소구간을 안 자르면 박/초 비율이 어긋나 템포가 밀린다
+    # (실측: 313박 곡에 316박까지 이벤트 -> 128 이 126.8bpm 으로).
+    tail = [(float(b), 128.0) for b in range(64)]
+    clean4, _ = dejitter_tempos(tail, 40.0)
+    ok(abs(clean4[0][1] - 128.0) < 1e-6,
+       "끝박 뒤 이벤트가 템포를 밀지 않는다 — %.4f" % clean4[0][1])
+
     print("PASS" if FAIL == 0 else "FAILED %d" % FAIL)
     sys.exit(FAIL)
 

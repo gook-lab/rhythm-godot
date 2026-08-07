@@ -181,13 +181,17 @@ def _fit_bpm(entries, lo, hi, end_beat):
     """
     b0 = entries[lo][0]
     b1 = entries[hi][0] if hi < len(entries) else end_beat
+    # 전사 MIDI 는 노트가 끝난 뒤에도 템포를 계속 찍으므로 end_beat 이
+    # 마지막 템포 이벤트보다 '앞'일 수 있다. 그때 소구간을 자르지 않으면
+    # 초는 [b0, 마지막이벤트] 를 재고 박은 [b0, b1] 을 재서 비율이 어긋난다
+    # (실측: 313박짜리 곡에 316박까지 이벤트가 있어 128 -> 126.8bpm).
+    # 모든 소구간을 [b0, b1] 안으로 잘라 넣는다.
     sec = 0.0
     for k in range(lo, hi):
-        s = entries[k][0]
-        # end_beat 이 마지막 템포 이벤트보다 앞일 수 있다(노트가 먼저 끝나는 경우).
-        # 구간을 음수로 두면 적분이 망가지므로 0 으로 눌러 둔다.
-        e = max(s, entries[k + 1][0] if k + 1 < hi else b1)
-        sec += (e - s) * 60.0 / entries[k][1]
+        s = min(max(entries[k][0], b0), b1)
+        e = min(entries[k + 1][0] if k + 1 < hi else b1, b1)
+        if e > s:
+            sec += (e - s) * 60.0 / entries[k][1]
     if sec <= 0.0:
         return entries[lo][1]
     return (b1 - b0) * 60.0 / sec
@@ -230,8 +234,12 @@ def dejitter_tempos(entries, end_beat, tol=0.10):
         out.append((entries[i][0], fit))
         i = j
 
+    # 두 맵 다 박->초가 구간 선형이므로 차이의 최대는 꺾이는 점에서만 난다.
+    # 곡이 끝난 뒤(end_beat 너머)는 외삽 구간이라 재지 않는다.
     before, after = TempoMap(entries), TempoMap(out)
-    edges = sorted({e[0] for e in entries} | {e[0] for e in out} | {end_beat})
+    edges = sorted(b for b in
+                   ({e[0] for e in entries} | {e[0] for e in out} | {end_beat})
+                   if b <= end_beat)
     drift = max(abs(before.sec_at(b) - after.sec_at(b)) for b in edges)
     return out, drift
 

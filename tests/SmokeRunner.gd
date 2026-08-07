@@ -13,7 +13,8 @@ extends Node
 ## 단위 테스트가 못 잡는 것을 본다:
 ##   감시자가 무입력 Miss 로 실제 전진하는가 · 곡 종료에 도달하는가 · 클럭 역행 크기
 
-const MAX_SECONDS := 95.0
+## 기본 상한. 긴 곡은 --max-sec= 로 늘린다 (mureka 곡 149초).
+var max_seconds := 95.0
 
 ## 자동 플레이. 각 타일의 정확한 시각에 스페이스를 눌러 판정 체인 전체를 검증한다.
 ## 무입력만 돌리면 '전부 미스' 경로만 보게 되고, 콤보·정확도·랭크·흔들림이
@@ -61,6 +62,8 @@ func _ready() -> void:
 			miss_every = int(a.split("=")[1])
 		elif a.begins_with("--chart="):
 			chart_path = a.split("=")[1]
+		elif a.begins_with("--max-sec="):
+			max_seconds = float(a.split("=")[1])
 	var scene: PackedScene = load("res://scenes/Main.tscn")
 	_main = scene.instantiate()
 	if chart_path != "":
@@ -143,7 +146,7 @@ func _process(_d: float) -> void:
 		print("  %7d  %8.0f  %4d  %4d  %d" % [sec, clk, idx,
 			int(_main.get_node("Score").total), int(AudioClock.clamp_hits)])
 
-	if fin or wall > MAX_SECONDS:
+	if fin or wall > max_seconds:
 		_finish(fin, wall)
 
 
@@ -190,7 +193,7 @@ func _finish(reached_end: bool, wall: float) -> void:
 	if _max_idx < 2:
 		print("  FAIL 감시자가 타일을 전진시키지 못했다 (idx %d)" % _max_idx); fails += 1
 	if not reached_end:
-		print("  FAIL %.0fs 안에 곡 종료 미도달" % MAX_SECONDS); fails += 1
+		print("  FAIL %.0fs 안에 곡 종료 미도달" % max_seconds); fails += 1
 	if autoplay and miss_every == 0 and score.total > 0:
 		# 정확한 시각에 눌렀으니 프레임 granularity(~7ms) 안에서 전부 Perfect 여야 한다.
 		if score.accuracy() < 99.0:
