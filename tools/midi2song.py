@@ -258,6 +258,13 @@ def main():
             speed_marks.append([q12(beat), mult])
             prev_mult = mult
     start_offset_ms = (tmap.sec_at(onsets[0]) - 60.0 / base_bpm) * 1000.0
+    # 실전 발견(위키피디아 샘플): 멀티트랙 MIDI 는 멜로디가 곡 한참 뒤에
+    # 진입하기도 한다(기타가 176박 = 87.5초). 변환은 정확하지만 그 동안
+    # 플레이어가 할 게 없다. 자동으로 자르는 건 월권이라 경고만 한다.
+    if tmap.sec_at(onsets[0]) > 12.0:
+        print("  !! 첫 타일이 %.1f초 — 인트로가 길다. 다른 트랙을 멜로디로 쓰거나"
+              % tmap.sec_at(onsets[0]))
+        print("     (--melody-track N) MIDI 를 잘라서 다시 뽑는 것을 고려하라.")
 
     # ── 렌더 ────────────────────────────────────────────────────
     end_beat = max(
