@@ -564,7 +564,8 @@ func _update_hud(t: float) -> void:
 	var mult := ChartRuntime.speed_mult_at(chart, maxi(_idx - 1, 0))
 	var tag := ""
 	if not is_equal_approx(mult, 1.0):
-		tag = "  %s x%g" % ["토끼" if mult > 1.0 else "달팽이", mult]
+		# %g 는 GDScript 포맷에 없다 (TilePath._draw_markers 의 주석 참고)
+		tag = "  %s x%s" % ["토끼" if mult > 1.0 else "달팽이", String.num(mult)]
 	_hud_info.text = "음악 %s / %s\n타일 BPM %.0f%s   체감 BPM %.0f\n타일 %d / %d" % [
 		_fmt_time(t), _fmt_time(_song_len_ms), ebpm, tag, felt,
 		_score.total, _judged_total]

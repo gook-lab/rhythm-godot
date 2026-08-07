@@ -269,5 +269,8 @@ func _draw_markers(tile: int, center: Vector2, rot_deg: float, alpha: float) -> 
 			p + Vector2(sz * 0.9, sz * 0.6 if up else -sz * 0.6),
 		])
 		draw_colored_polygon(tri, col)
-		draw_string(ThemeDB.fallback_font, p + Vector2(-16, 30), "x%g" % mult,
+		# GDScript 의 % 포맷엔 %g 가 없다 — 쓰면 매 프레임 포맷 에러가 나면서
+		# 텍스트가 아예 안 그려진다(4MB 로그 스팸으로 발견). String.num 이
+		# %g 의 의도(뒤 0 제거: 2.0 -> "2", 1.5 -> "1.5")를 대신한다.
+		draw_string(ThemeDB.fallback_font, p + Vector2(-16, 30), "x" + String.num(mult),
 			HORIZONTAL_ALIGNMENT_CENTER, 32, 13, col)
