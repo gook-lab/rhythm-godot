@@ -11,7 +11,11 @@ extends Node2D
 ##    "행성은 아직 도착 안 했는데 판정은 Perfect" — 눈과 손이 불일치하는,
 ##    진단이 가장 어려운 종류다.
 ##    대신 set_orbit_progress(u) 를 매 프레임 오디오 클럭에서 파생시킨다.
-##    프레임 드롭이 나도 다음 프레임에 올바른 위치로 자동 복구된다.
+##
+## 트레일은 '기록'이지 '구동'이 아니다. 매 프레임 위치를 남기기만 하고
+## 아무것도 움직이지 않으므로 두 번째 시간축을 만들지 않는다.
+
+const TRAIL_LEN := 22
 
 @onready var _a: Node2D = $PlanetA
 @onready var _b: Node2D = $PlanetB
@@ -22,6 +26,19 @@ var _sweep_deg := 180.0
 var _radius := 96.0
 ## true 면 A 가 축이고 B 가 돈다. 타일마다 뒤집힌다.
 var _a_is_pivot := true
+
+var _trail_a: Array[Vector2] = []
+var _trail_b: Array[Vector2] = []
+var _color_a := Color(1.0, 0.45, 0.35)
+var _color_b := Color(0.4, 0.9, 1.0)
+
+
+func _ready() -> void:
+	# 트레일은 행성 뒤에 깔려야 한다. PlanetPair 자신이 그리고 자식이 위에 그려진다.
+	if _a is Planet:
+		_color_a = (_a as Planet).color
+	if _b is Planet:
+		_color_b = (_b as Planet).color
 
 
 func configure(pivot_pos: Vector2, start_deg: float, sweep_deg: float, radius: float) -> void:
@@ -35,6 +52,12 @@ func swap_roles() -> void:
 	_a_is_pivot = not _a_is_pivot
 
 
+func clear_trails() -> void:
+	_trail_a.clear()
+	_trail_b.clear()
+	queue_redraw()
+
+
 ## u = 0.0 (공전 시작) ~ 1.0 (다음 타일 도착)
 func set_orbit_progress(u: float) -> void:
 	var t := clampf(u, 0.0, 1.0)
@@ -46,6 +69,35 @@ func set_orbit_progress(u: float) -> void:
 	else:
 		_b.position = _pivot_pos
 		_a.position = orbiting
+	_push_trail(_trail_a, _a.position)
+	_push_trail(_trail_b, _b.position)
+	queue_redraw()
+
+
+func _push_trail(buf: Array[Vector2], p: Vector2) -> void:
+	# 축은 안 움직이므로 같은 자리가 쌓인다. 의미 없는 점은 안 넣는다.
+	if not buf.is_empty() and buf[buf.size() - 1].distance_squared_to(p) < 1.0:
+		return
+	buf.append(p)
+	if buf.size() > TRAIL_LEN:
+		buf.remove_at(0)
+
+
+func _draw() -> void:
+	_draw_trail(_trail_a, _color_a)
+	_draw_trail(_trail_b, _color_b)
+
+
+func _draw_trail(buf: Array[Vector2], base: Color) -> void:
+	var n := buf.size()
+	if n < 2:
+		return
+	# 오래된 쪽이 얇고 투명하다. 선분마다 굵기가 달라야 해서 draw_polyline 대신
+	# 개별 선분으로 그린다(폴리라인은 굵기가 하나뿐이다).
+	for i in range(1, n):
+		var k := float(i) / float(n - 1)   # 0=가장 오래됨, 1=현재
+		var c := Color(base.r, base.g, base.b, 0.55 * k * k)
+		draw_line(buf[i - 1], buf[i], c, 2.0 + 12.0 * k, true)
 
 
 ## 즉발 피드백. 2프레임 뒤에 원복한다 — 200ms 토스트면 이미 늦다.

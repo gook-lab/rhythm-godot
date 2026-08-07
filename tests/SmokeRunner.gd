@@ -20,6 +20,8 @@ var _t0 := 0
 var _frames := 0
 var _max_idx := 0
 var _last_sec := -1
+var _pinned := 0     # 공전 진행률이 1.0 에 붙어 있던 프레임 수
+var _moving := 0
 
 
 func _ready() -> void:
@@ -38,6 +40,13 @@ func _process(_d: float) -> void:
 	_frames += 1
 	var wall := float(Time.get_ticks_usec() - _t0) / 1_000_000.0
 	var idx: int = _main.get("_idx")
+	# 렌더가 얼어 있는지 잰다. 렌더 커서를 판정 커서에 묶어두면
+	# 매 타일 miss_ms 만큼 u=1.0 에 붙어 있게 된다(0.5박@120bpm 이면 시간의 44%).
+	var u: float = _main.get("_last_u")
+	if u >= 0.999:
+		_pinned += 1
+	else:
+		_moving += 1
 	var fin: bool = _main.get("_finished")
 	_max_idx = maxi(_max_idx, idx)
 
@@ -63,6 +72,8 @@ func _finish(reached_end: bool, wall: float) -> void:
 	print("  도달 타일 %d / %d · 판정 %d 건" % [_max_idx, n, score.total])
 	print("  클럭 역행 %d회 · 최대 %.3fms" % [int(AudioClock.clamp_hits),
 		float(AudioClock.max_backstep_ms)])
+	var pin_pct := 100.0 * _pinned / maxf(float(_pinned + _moving), 1.0)
+	print("  공전 정지 프레임 %.1f%% (%d / %d)" % [pin_pct, _pinned, _pinned + _moving])
 
 	var fails := 0
 	if _max_idx < 2:
@@ -73,6 +84,10 @@ func _finish(reached_end: bool, wall: float) -> void:
 		print("  FAIL 판정 수(%d)가 타일 수(%d)보다 적다" % [score.total, n]); fails += 1
 	# 역행은 구조적으로 일어난다. 횟수가 아니라 크기로 본다.
 	# 한 청크(~6ms)를 크게 넘으면 그건 다른 문제다.
+	# 렌더 커서를 판정 커서에 묶으면 여기가 20~60% 로 뛴다.
+	if pin_pct > 8.0:
+		print("  FAIL 공전이 %.1f%% 의 프레임에서 멈춰 있다 — 렌더 커서가 판정 커서에 묶였나?"
+			% pin_pct); fails += 1
 	if float(AudioClock.max_backstep_ms) > 10.0:
 		print("  FAIL 클럭 역행이 %.1fms — 믹스 청크로 설명 안 되는 크기"
 			% float(AudioClock.max_backstep_ms)); fails += 1

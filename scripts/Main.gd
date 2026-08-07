@@ -32,13 +32,26 @@ const TILE_SPACING := 96.0
 
 var _hit_times := PackedFloat32Array()
 var _positions := PackedVector2Array()
-## 다음에 밟을 타일. 0 은 출발점이라 1 에서 시작한다.
+## 판정 커서 — 입력 또는 미스 기한으로 전진한다. 0 은 출발점이라 1 에서 시작.
 var _idx := 1
+
+## 렌더 커서 — 순수하게 시간으로만 전진한다.
+##
+## 왜 나눴나: 감시자는 hit_time + miss_ms 에 전진한다(그래야 늦은 입력을 받아준다).
+## 그런데 렌더까지 그 커서를 따라가면 행성이 u=1 에 도달한 뒤 miss_ms 동안 얼어붙는다.
+## 0.5박 @120bpm 구간이면 250ms 중 110ms, 즉 시간의 44% 를 멈춰 있다 —
+## 움직임이 끊겨 보이는 원인이 이거였다.
+## 둘 다 now_ms() 에서 파생되므로 시간축은 여전히 하나다.
+var _vis := 1
 var _finished := false
 var _song_len_ms := 0.0
 
 ## 미스 화면 흔들림 잔량(px). 0 으로 감쇠한다.
 var _shake := 0.0
+
+## 마지막 프레임의 공전 진행률. 회귀 테스트가 읽는다 —
+## 이 값이 1.0 에 오래 붙어 있으면 행성이 얼어 있다는 뜻이다.
+var _last_u := 0.0
 
 
 func _ready() -> void:
@@ -64,11 +77,14 @@ func _ready() -> void:
 
 func _restart() -> void:
 	_idx = 1
+	_vis = 1
 	_finished = false
 	_shake = 0.0
 	_popup.text = ""
 	_score.reset()   # 표본(deltas)은 남긴다 — 산포 측정이 세션 단위다
-	_apply_tile(1)
+	_planets.clear_trails()
+	_configure_orbit(1)
+	_apply_windows(1)
 	_planets.set_orbit_progress(0.0)
 	AudioClock.start(chart.audio)
 
@@ -79,17 +95,22 @@ func _draw_path() -> void:
 		_path.add_point(p)
 
 
-## 타일 i 로 가는 공전과 판정창을 세팅한다.
-func _apply_tile(i: int) -> void:
-	if i >= chart.angles.size():
+## 렌더: 타일 i 로 가는 공전을 세팅한다. (렌더 커서 _vis 를 따른다)
+func _configure_orbit(i: int) -> void:
+	if i <= 0 or i >= chart.angles.size():
 		return
 	_planets.configure(
 		_positions[i - 1],
 		ChartRuntime.orbit_start_deg(chart.angles, i),
 		ChartRuntime.orbit_sweep_deg(chart.angles, i),
 		TILE_SPACING)
-	# 판정창을 이웃 타일까지의 거리로 캡한다. 이게 없으면 빠른 구간에서 창이 겹쳐
-	# 한 번 누른 입력이 두 타일 모두에 유효해진다.
+
+
+## 판정: 타일 i 의 판정창을 이웃까지의 거리로 캡한다. (판정 커서 _idx 를 따른다)
+## 이게 없으면 빠른 구간에서 창이 겹쳐 한 번 누른 입력이 두 타일 모두에 유효해진다.
+func _apply_windows(i: int) -> void:
+	if i >= _hit_times.size():
+		return
 	_judge.set_gaps(_gap_before(i), _gap_after(i))
 	_timing_bar.set_windows(_judge.perfect_ms, _judge.very_ms, _judge.miss_ms)
 
@@ -116,25 +137,34 @@ func _process(delta: float) -> void:
 		return
 	var t := AudioClock.judged_ms()
 
-	# 기한이 지난 타일을 전부 Miss 로 확정하고 전진한다.
+	# ── 판정 커서: 기한이 지난 타일을 Miss 로 확정하고 전진한다.
 	# while 인 이유: 랙 스파이크가 나면 한 프레임에 여러 타일이 동시에 만료된다.
 	while _idx < _hit_times.size() and t > _hit_times[_idx] + _judge.miss_ms:
 		_judge.emit_miss(_idx)
 		_advance()
 
+	# ── 렌더 커서: 시간이 지나면 그냥 전진한다. 미스 기한을 기다리지 않는다.
+	# 이게 판정 커서와 붙어 있으면 행성이 매 타일 miss_ms 만큼 얼어붙는다.
+	while _vis < _hit_times.size() and t >= _hit_times[_vis]:
+		_vis += 1
+		_planets.swap_roles()
+		_configure_orbit(_vis)
+
 	if _idx >= _hit_times.size():
 		_on_song_finished()
 		return
 
-	# 공전각도 판정과 같은 t 에서 파생한다.
-	var t0 := _hit_times[_idx - 1]
-	var t1 := _hit_times[_idx]
+	# 공전각은 렌더 커서로, 판정과 같은 t 에서 파생한다.
+	var vi := mini(_vis, _hit_times.size() - 1)
+	var t0 := _hit_times[vi - 1]
+	var t1 := _hit_times[vi]
 	var span := t1 - t0
 	var u := 0.0 if span <= 0.0 else clampf((t - t0) / span, 0.0, 1.0)
+	_last_u = u
 	_planets.set_orbit_progress(u)
 
 	# 카메라도 같은 t 에서 파생한다. 별도 트윈을 두면 그게 또 하나의 시간축이 된다.
-	var base := _positions[_idx - 1].lerp(_positions[_idx], u)
+	var base := _positions[vi - 1].lerp(_positions[vi], u)
 	_camera.position = base + _shake_offset()
 
 	_update_hud(t)
@@ -181,10 +211,10 @@ func _input(event: InputEvent) -> void:
 	_advance()
 
 
+## 판정 커서만 전진시킨다. 행성 역할 교체와 공전 재설정은 렌더 커서가 한다.
 func _advance() -> void:
 	_idx += 1
-	_planets.swap_roles()
-	_apply_tile(_idx)
+	_apply_windows(_idx)
 
 
 func _on_judged(v: Judge.Verdict, delta_ms: float, _tile: int) -> void:
@@ -192,7 +222,7 @@ func _on_judged(v: Judge.Verdict, delta_ms: float, _tile: int) -> void:
 	if is_finite(delta_ms):
 		_popup.text += "  %+.0fms" % delta_ms
 		_timing_bar.push(delta_ms)
-	_popup.position = _positions[mini(_idx, _positions.size() - 1)] + Vector2(-60, -80)
+	_popup.position = _positions[mini(_vis, _positions.size() - 1)] + Vector2(-60, -80)
 
 	match v:
 		Judge.Verdict.PERFECT:
