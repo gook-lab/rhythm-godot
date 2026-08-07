@@ -14,6 +14,11 @@ extends Node2D
 
 const TILE_SPACING := 96.0
 
+## 카메라가 평균낼 타일 범위(앞뒤). 크면 차분하지만 행성이 화면 중심에서 멀어진다.
+## 실측(창 / 낭비배수 / 행성까지 최대거리):
+##   ±1 -> 4.07x / 162px · ±2 -> 3.32x / 194px · ±3 -> 3.10x / 242px
+const CAMERA_WINDOW := 2
+
 @export var chart: Chart
 
 @onready var _path: Line2D = $World/Path
@@ -89,7 +94,7 @@ func _restart() -> void:
 	# 카메라를 시작 위치에 미리 놓고 스무딩 이력을 지운다.
 	# 안 하면 워밍업 동안 (0,0) 에 있다가 warm 되는 첫 프레임에
 	# 미드포인트로 48px(반지름의 절반) 순간이동한다.
-	_camera.position = _planets.midpoint()
+	_camera.position = _camera_target(1, 0.0)
 	_camera.offset = Vector2.ZERO
 	_camera.reset_smoothing()
 	AudioClock.start(chart.audio)
@@ -169,15 +174,40 @@ func _process(delta: float) -> void:
 	_last_u = u
 	_planets.set_orbit_progress(u)
 
-	# 카메라는 두 행성의 중점을 따라간다. 타일 사이 직선 lerp 는
-	# 타일이 바뀔 때마다 진행 방향이 불연속으로 꺾여서 뚝뚝 끊겨 보인다.
 	# 흔들림은 position 이 아니라 offset 으로 준다 —
 	# position 에 실으면 Camera2D 의 position_smoothing 이 흔들림을 뭉개서
 	# '흔들림'이 아니라 '느린 표류'가 된다.
-	_camera.position = _planets.midpoint()
+	_camera.position = _camera_target(vi, u)
 	_camera.offset = _shake_offset()
 
 	_update_hud(t)
+
+
+## 카메라가 볼 지점.
+##
+## 순간 위치(행성이든 축이든 중점이든)를 쫓으면 경로의 지그재그를 그대로 따라가서
+## 위아래로 튄다. demo 채보만 해도 90도 4연속(사각형)이 두 번, U턴이 세 번 있어서
+## 길이 진짜로 되돌아온다 — 알고리즘을 뭘 쓰든 순간 위치를 쫓으면 흔들린다.
+##
+## 그래서 주변 타일들의 '평균'을 본다. 사각형 구간이면 사각형 중심에 머문다.
+## 창이 대칭이라 앞으로 올 타일도 자연스럽게 반영된다(선행 시야).
+##
+## 실측 경로 낭비 배수(실제 이동거리 / 순 이동거리, 1 이면 곧게 따라감):
+##   두 행성 중점        8.17x   (축 주위로 반지름 48px 원을 그린다)
+##   축(현재 타일)만     6.50x   (타일마다 96px 점프)
+##   타일 사이 직선 lerp 5.86x   (타일 경계에서 방향 불연속)
+##   이 방식 (창 ±2)     3.32x
+func _camera_target(i: int, u: float) -> Vector2:
+	return _track_center(i - 1).lerp(_track_center(i), u)
+
+
+func _track_center(i: int) -> Vector2:
+	var lo := maxi(0, i - CAMERA_WINDOW)
+	var hi := mini(_positions.size() - 1, i + CAMERA_WINDOW)
+	var acc := Vector2.ZERO
+	for k in range(lo, hi + 1):
+		acc += _positions[k]
+	return acc / float(hi - lo + 1)
 
 
 func _shake_offset() -> Vector2:

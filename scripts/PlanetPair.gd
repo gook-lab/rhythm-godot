@@ -108,19 +108,3 @@ func flash(color: Color) -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 	n.modulate = Color.WHITE
-
-
-## 두 행성의 중점. 카메라가 이걸 따라간다.
-##
-## 왜 타일 lerp 가 아니라 중점인가:
-##   타일 lerp 는 행성이 실제로 그리는 호가 아니라 직선을 따라가고,
-##   타일이 바뀔 때마다 진행 방향이 불연속으로 꺾인다(U턴에선 아예 뒤로 간다).
-##   실측 결과 프레임당 이동량이 중앙값의 13.8배까지 튀었다.
-##
-##   중점은 역할 교체 순간에 '정확히' 연속이다:
-##     교체 직전  pivot=P[i-1], 도는 쪽이 P[i] 에 도착 -> 중점 = (P[i-1]+P[i])/2
-##     교체 직후  pivot=P[i],   도는 쪽이 P[i-1]       -> 중점 = (P[i]+P[i-1])/2
-##   같은 점이다. 위치 점프가 원천적으로 없어진다.
-##   (속도는 첨점이 생기지만 위치 점프보다 훨씬 덜 보이고, 카메라 스무딩이 먹는다.)
-func midpoint() -> Vector2:
-	return (_a.position + _b.position) * 0.5

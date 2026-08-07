@@ -24,6 +24,10 @@ var _pinned := 0     # 공전 진행률이 1.0 에 붙어 있던 프레임 수
 var _moving := 0
 var _cam_prev := Vector2.INF
 var _cam_steps: Array[float] = []   # 프레임당 카메라 타깃 이동량(px)
+var _cam_path := 0.0                # 카메라가 실제로 지나간 총 거리
+var _cam_first := Vector2.INF
+var _cam_last := Vector2.ZERO
+var _far := 0.0                     # 카메라와 도는 행성 사이 최대 거리
 
 
 func _ready() -> void:
@@ -47,8 +51,17 @@ func _process(_d: float) -> void:
 	# 카메라 타깃의 프레임간 이동량. 경로가 불연속이면 여기 스파이크가 뜬다.
 	var cam: Vector2 = _main.get_node("World/Camera2D").position
 	if _cam_prev != Vector2.INF:
-		_cam_steps.append(_cam_prev.distance_to(cam))
+		var st := _cam_prev.distance_to(cam)
+		_cam_steps.append(st)
+		_cam_path += st
+	else:
+		_cam_first = cam
 	_cam_prev = cam
+	_cam_last = cam
+	# 액션이 화면 밖으로 나가는지. 카메라가 행성을 놓치면 이 값이 커진다.
+	var pair: Node2D = _main.get_node("World/PlanetPair")
+	_far = maxf(_far, cam.distance_to(pair.get_node("PlanetA").position))
+	_far = maxf(_far, cam.distance_to(pair.get_node("PlanetB").position))
 
 	var u: float = _main.get("_last_u")
 	if u >= 0.999:
@@ -87,8 +100,14 @@ func _finish(reached_end: bool, wall: float) -> void:
 	var med: float = steps[steps.size() / 2] if steps.size() > 0 else 0.0
 	var mx: float = steps[steps.size() - 1] if steps.size() > 0 else 0.0
 	var p99: float = steps[int(steps.size() * 0.99)] if steps.size() > 0 else 0.0
+	# 경로 낭비 배수 = 실제 지나간 거리 / 순 이동거리.
+	# 1 에 가까우면 곧게 따라간다. 카메라가 원을 그리면 크게 뛴다.
+	var net := _cam_first.distance_to(_cam_last)
+	var waste := _cam_path / maxf(net, 1.0)
 	print("  카메라 프레임이동 중앙 %.2fpx · p99 %.2fpx · 최대 %.2fpx · 튐배수 %.1fx"
 		% [med, p99, mx, mx / maxf(med, 0.001)])
+	print("  카메라 경로 %.0fpx / 순이동 %.0fpx = 낭비 %.2fx · 행성까지 최대 %.0fpx"
+		% [_cam_path, net, waste, _far])
 
 	var pin_pct := 100.0 * _pinned / maxf(float(_pinned + _moving), 1.0)
 	print("  공전 정지 프레임 %.1f%% (%d / %d)" % [pin_pct, _pinned, _pinned + _moving])
@@ -109,6 +128,10 @@ func _finish(reached_end: bool, wall: float) -> void:
 			% [p99, med]); fails += 1
 	if mx > 20.0:
 		print("  FAIL 카메라가 한 프레임에 %.1fpx 튀었다" % mx); fails += 1
+	# 흔들림. 순간 위치를 쫓으면 경로의 지그재그를 그대로 따라가 5.9~8.2x 가 된다.
+	if waste > 4.0:
+		print("  FAIL 카메라 경로 낭비 %.2fx — 지그재그를 그대로 쫓고 있나?"
+			% waste); fails += 1
 
 	# 렌더 커서를 판정 커서에 묶으면 여기가 20~60% 로 뛴다.
 	if pin_pct > 8.0:
