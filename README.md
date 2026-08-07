@@ -83,7 +83,7 @@ Main.tscn                        씬 리로드로 재시작해도 안전
 | `Judge.gd` | ms 판정만. 렌더도 상태 전진도 모름 |
 | `Main.gd` | 배선 + TileCursor 상태 + 감시자/입력자 |
 
-### 지키는 규칙 7개
+### 지키는 규칙 8개
 
 **1. 판정은 오디오 클럭 ms 차이로만 한다.** 좌표 겹침도 프레임 카운트도 안 쓴다.
 
@@ -152,13 +152,34 @@ Tween 은 프레임 루프가 굴리는 벽시계라 오디오 클럭과 별개�
 흔들림(미스 연출)은 `position` 이 아니라 `offset` 으로 준다 — `position` 에 실으면
 `position_smoothing` 이 뭉개서 '흔들림'이 아니라 '느린 표류'가 된다.
 
-**6. 채보에는 카운트인이 있어야 한다 (기본 4박).**
+**6. 미스마다 화면을 흔들지 않는다. 콤보가 실제로 끊길 때만 짧게 흔든다.**
+
+리듬게임에서 미스는 흔한 일이다. 흔들림이 타일 간격(250~500ms)보다 길면
+사실상 상시 진동이 된다. 실측: 14px/233ms 로 매 미스마다 흔들었더니
+**전체 프레임의 47.3%** 가 흔들리고, 화면에 보이는 경로 낭비가
+2.65x -> **18.01x** 로 뛰었다.
+
+그리고 `randf()` 로 매 프레임 방향을 바꾸면 안 된다. 144fps 면 초당 144번
+방향이 바뀌어서 '충격'이 아니라 '떨림'으로 읽히고, fps 에 따라 체감도 달라진다.
+고정 주파수(22Hz) 감쇠 진동을 쓴다.
+
+| | 흔들리는 프레임 | 보이는 경로 낭비 |
+|---|---|---|
+| 미스마다 14px/233ms · 매 프레임 랜덤 | 47.3 % | 18.01x |
+| **콤보 3+ 끊길 때만 7px · 22Hz** | **4.5 %** | **3.06x** |
+
+> **계측 함정:** 흔들림을 `offset` 으로 옮긴 뒤에도 지표는 `position` 만 재고 있었다.
+> 그래서 "카메라 낭비 2.65x, 통과"라고 보고했는데 실제로 보이는 값은 18.01x 였다.
+> 지금은 **연속성은 `position`, 흔들림은 `position + offset`** 으로 나눠 잰다.
+> 섞으면 정당한 흔들림이 연속성 실패로 오인된다.
+
+**7. 채보에는 카운트인이 있어야 한다 (기본 4박).**
 
 음악적으로도 필요하지만 기술적으로도 필요하다. `AudioClock` 워밍업(100ms) 동안
 렌더가 멈춰 있는데, 첫 타일이 0ms 에 있으면 warm 되는 순간 그만큼을 한 번에
 건너뛰어 카메라가 32px 튄다. `tools/make_charts.py:LEAD_IN_BEATS`.
 
-**7. 인덱스는 `angles[i-2]`(들어온 방향)와 `angles[i-1]`(나갈 방향)이다. `angles[i]` 가 아니다.**
+**8. 인덱스는 `angles[i-2]`(들어온 방향)와 `angles[i-1]`(나갈 방향)이다. `angles[i]` 가 아니다.**
 
 타일 `i` 로 가는 공전은 축이 타일 `i-1` 이고, 도는 행성이 타일 `i-2` 에서 출발해
 타일 `i` 에 착지한다. 그러니 스윕을 정하는 건 `angles[i-2]` 와 `angles[i-1]` 이다.
@@ -192,8 +213,14 @@ python3 tools/make_charts.py
 # 단위 테스트 (의존성 0) — 85종
 godot --headless --script res://tests/run_tests.gd
 
-# 통합 스모크 (전곡 자동 완주, 감시자/곡종료/클럭 역행 검증)
+# 통합 스모크 (전곡 완주 · 감시자 · 곡종료 · 클럭 역행 · 카메라 · 흔들림)
 godot --headless --audio-driver CoreAudio res://tests/SmokeScene.tscn
+
+# 자동 플레이 — 판정 체인 전체 검증 (랭크 P / 100% / σ 2.1ms 가 나와야 한다)
+godot --headless --audio-driver CoreAudio res://tests/SmokeScene.tscn -- --autoplay
+
+# 일부러 놓치기 — 콤보 끊김과 흔들림 발동 검증
+godot --headless --audio-driver CoreAudio res://tests/SmokeScene.tscn -- --autoplay --miss-every=5
 
 # 오디오 클럭 실측 (드리프트·지터·3항vs1항)
 godot --headless --audio-driver CoreAudio --script res://tests/probe_clock.gd

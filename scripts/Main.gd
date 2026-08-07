@@ -19,6 +19,12 @@ const TILE_SPACING := 96.0
 ##   ±1 -> 4.07x / 162px · ±2 -> 3.32x / 194px · ±3 -> 3.10x / 242px
 const CAMERA_WINDOW := 2
 
+## 흔들림: 세기(px) · 감쇠(px/초) · 주파수(Hz) · 발동 최소 콤보
+const SHAKE_STRENGTH := 7.0
+const SHAKE_DECAY := 60.0
+const SHAKE_HZ := 22.0
+const SHAKE_MIN_COMBO := 3
+
 @export var chart: Chart
 
 @onready var _path: Line2D = $World/Path
@@ -51,8 +57,15 @@ var _vis := 1
 var _finished := false
 var _song_len_ms := 0.0
 
-## 미스 화면 흔들림 잔량(px). 0 으로 감쇠한다.
+## 미스 화면 흔들림 잔량(px)과 경과 시간.
+##
+## 미스마다 흔들면 안 된다. 리듬게임에서 미스는 흔한 일이고,
+## 타일 간격(250~500ms)보다 흔들림이 길면 사실상 상시 진동이 된다.
+## 실측: 14px/233ms 로 매 미스마다 흔들었더니 전체 프레임의 47% 가 흔들리고
+## 카메라 경로 낭비가 2.65x -> 18.01x 로 뛰었다.
+## 그래서 '콤보가 끊길 때만' 짧게 흔든다.
 var _shake := 0.0
+var _shake_t := 0.0
 
 ## 마지막 프레임의 공전 진행률. 회귀 테스트가 읽는다 —
 ## 이 값이 1.0 에 오래 붙어 있으면 행성이 얼어 있다는 뜻이다.
@@ -73,8 +86,9 @@ func _ready() -> void:
 
 	_offset_slider.value_changed.connect(_on_offset_changed)
 	_on_offset_changed(_offset_slider.value)
-	_judge.judged.connect(_score.on_judged)
+	# 순서 중요: Main 이 '끊기기 직전 콤보'를 알아야 하므로 Score 보다 먼저 받는다.
 	_judge.judged.connect(_on_judged)
+	_judge.judged.connect(_score.on_judged)
 	AudioClock.song_finished.connect(_on_song_finished)
 
 	_restart()
@@ -85,6 +99,8 @@ func _restart() -> void:
 	_vis = 1
 	_finished = false
 	_shake = 0.0
+	_shake_t = 0.0
+	_prev_combo = 0
 	_popup.text = ""
 	_score.reset()   # 표본(deltas)은 남긴다 — 산포 측정이 세션 단위다
 	_planets.clear_trails()
@@ -142,7 +158,8 @@ func _gap_after(i: int) -> float:
 func _process(delta: float) -> void:
 	# 화면 흔들림은 오디오 클럭과 무관한 순수 연출이라 프레임 시간으로 감쇠시킨다.
 	if _shake > 0.01:
-		_shake = maxf(0.0, _shake - delta * 60.0)
+		_shake_t += delta
+		_shake = maxf(0.0, _shake - delta * SHAKE_DECAY)
 
 	if _finished or not AudioClock.is_warm():
 		return
@@ -213,9 +230,11 @@ func _track_center(i: int) -> Vector2:
 func _shake_offset() -> Vector2:
 	if _shake <= 0.01:
 		return Vector2.ZERO
-	# 프레임마다 방향이 바뀌는 고주파 흔들림. 미스에만 쓴다.
-	var a := randf() * TAU
-	return Vector2(cos(a), sin(a)) * _shake
+	# 고정 주파수 감쇠 진동. 프레임마다 randf() 를 쓰면 fps 에 따라 체감이 달라지고
+	# (144fps 면 초당 144번 방향이 바뀐다) '충격'이 아니라 '떨림'으로 읽힌다.
+	# 두 축의 주파수를 어긋나게 해서 한 방향으로만 왕복하지 않게 한다.
+	var w := _shake_t * TAU * SHAKE_HZ
+	return Vector2(sin(w), cos(w * 0.7)) * _shake
 
 
 # ------------------------------------------------------------------ 입력자
@@ -257,7 +276,11 @@ func _advance() -> void:
 	_apply_windows(_idx)
 
 
+var _prev_combo := 0
+
+
 func _on_judged(v: Judge.Verdict, delta_ms: float, _tile: int) -> void:
+	_prev_combo = _score.combo   # Score 가 아직 갱신 전이라 '직전' 값이다
 	_popup.text = Judge.verdict_name(v)
 	if is_finite(delta_ms):
 		_popup.text += "  %+.0fms" % delta_ms
@@ -273,7 +296,12 @@ func _on_judged(v: Judge.Verdict, delta_ms: float, _tile: int) -> void:
 			_planets.flash(Color(1.0, 0.9, 0.5))
 		_:
 			_planets.flash(Color(1.0, 0.4, 0.4))
-			_shake = 14.0
+			# 콤보가 실제로 끊길 때만 흔든다. 이미 끊긴 상태에서 계속 미스하는 건
+			# 잃을 게 없으므로 흔들 이유도 없다. (on_judged 가 먼저 불려서
+			# 여기 도달할 땐 combo 가 이미 0 이므로 직전 값을 쓴다)
+			if _prev_combo >= SHAKE_MIN_COMBO:
+				_shake = SHAKE_STRENGTH
+				_shake_t = 0.0
 
 
 func _on_song_finished() -> void:

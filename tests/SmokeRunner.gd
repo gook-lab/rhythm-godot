@@ -15,6 +15,15 @@ extends Node
 
 const MAX_SECONDS := 45.0
 
+## 자동 플레이. 각 타일의 정확한 시각에 스페이스를 눌러 판정 체인 전체를 검증한다.
+## 무입력만 돌리면 '전부 미스' 경로만 보게 되고, 콤보·정확도·랭크·흔들림이
+## 한 번도 안 불린다.
+##   godot --headless --audio-driver CoreAudio res://tests/SmokeScene.tscn -- --autoplay
+## 일부러 놓칠 타일 간격(0 이면 전부 친다). 콤보 끊김/흔들림을 보려면 쓴다.
+var autoplay := false
+var miss_every := 0
+var _pressed := 0
+
 var _main: Node
 var _t0 := 0
 var _frames := 0
@@ -27,15 +36,28 @@ var _cam_steps: Array[float] = []   # 프레임당 카메라 타깃 이동량(px
 var _cam_path := 0.0                # 카메라가 실제로 지나간 총 거리
 var _cam_first := Vector2.INF
 var _cam_last := Vector2.ZERO
-var _far := 0.0                     # 카메라와 도는 행성 사이 최대 거리
+var _far := 0.0
+var _off_max := 0.0
+var _seen_prev := Vector2.INF
+var _seen_first := Vector2.INF
+var _seen_last := Vector2.ZERO
+var _seen_path := 0.0
+var _shaking := 0                     # 카메라와 도는 행성 사이 최대 거리
 
 
 func _ready() -> void:
+	var args := OS.get_cmdline_user_args()
+	autoplay = args.has("--autoplay")
+	for a in args:
+		if a.begins_with("--miss-every="):
+			miss_every = int(a.split("=")[1])
 	var scene: PackedScene = load("res://scenes/Main.tscn")
 	_main = scene.instantiate()
 	add_child(_main)
 	_t0 = Time.get_ticks_usec()
 	var chart: Chart = _main.get("chart")
+	print("모드: %s%s" % ["자동플레이" if autoplay else "무입력",
+		("  (%d 타일마다 일부러 놓침)" % miss_every) if miss_every > 0 else ""])
 	print("드라이버 %s · 차트 %s · 타일 %d · 오디오 %.1fs"
 		% [AudioServer.get_driver_name(), chart.title,
 		   chart.angles.size(), chart.audio.get_length()])
@@ -49,7 +71,21 @@ func _process(_d: float) -> void:
 	# 렌더가 얼어 있는지 잰다. 렌더 커서를 판정 커서에 묶어두면
 	# 매 타일 miss_ms 만큼 u=1.0 에 붙어 있게 된다(0.5박@120bpm 이면 시간의 44%).
 	# 카메라 타깃의 프레임간 이동량. 경로가 불연속이면 여기 스파이크가 뜬다.
-	var cam: Vector2 = _main.get_node("World/Camera2D").position
+	# 연속성은 '타깃'(position)으로 잰다 — 경로가 끊기는지의 문제다.
+	# 흔들림은 '실제로 보이는 것'(position+offset)으로 잰다 — 화면이 떨리는지의 문제다.
+	# 둘을 한 지표로 섞으면 정당한 흔들림이 연속성 실패로 오인된다.
+	var camnode: Camera2D = _main.get_node("World/Camera2D")
+	var cam: Vector2 = camnode.position
+	var seen: Vector2 = camnode.position + camnode.offset
+	if _seen_prev != Vector2.INF:
+		_seen_path += _seen_prev.distance_to(seen)
+	else:
+		_seen_first = seen
+	_seen_prev = seen
+	_seen_last = seen
+	_off_max = maxf(_off_max, camnode.offset.length())
+	if camnode.offset.length() > 0.5:
+		_shaking += 1
 	if _cam_prev != Vector2.INF:
 		var st := _cam_prev.distance_to(cam)
 		_cam_steps.append(st)
@@ -62,6 +98,20 @@ func _process(_d: float) -> void:
 	var pair: Node2D = _main.get_node("World/PlanetPair")
 	_far = maxf(_far, cam.distance_to(pair.get_node("PlanetA").position))
 	_far = maxf(_far, cam.distance_to(pair.get_node("PlanetB").position))
+
+	# 자동 플레이: 해당 타일의 시각이 지나면 스페이스를 한 번 보낸다.
+	if autoplay and AudioClock.is_warm():
+		var ht: PackedFloat32Array = _main.get("_hit_times")
+		var ji: int = _main.get("_idx")
+		if ji < ht.size() and float(AudioClock.judged_ms()) >= ht[ji]:
+			var skip := miss_every > 0 and ji % miss_every == 0
+			if not skip:
+				var ev := InputEventKey.new()
+				ev.keycode = KEY_SPACE
+				ev.physical_keycode = KEY_SPACE
+				ev.pressed = true
+				Input.parse_input_event(ev)
+				_pressed += 1
 
 	var u: float = _main.get("_last_u")
 	if u >= 0.999:
@@ -90,7 +140,12 @@ func _finish(reached_end: bool, wall: float) -> void:
 	var n := chart.angles.size() - 1
 	print("\n결과")
 	print("  %.1fs · %d 프레임 (%.0f fps)" % [wall, _frames, _frames / maxf(wall, 0.001)])
-	print("  도달 타일 %d / %d · 판정 %d 건" % [_max_idx, n, score.total])
+	print("  도달 타일 %d / %d · 판정 %d 건 · 입력 %d 회" % [_max_idx, n, score.total, _pressed])
+	if autoplay:
+		var st2: Dictionary = score.delta_stats()
+		print("  랭크 %s · 정확도 %.2f%% · 최대콤보 %d · 표본 %d 평균 %+.1fms σ %.1fms"
+			% [score.rank(), score.accuracy(), score.max_combo,
+			   st2.n, st2.mean, st2.sd])
 	print("  클럭 역행 %d회 · 최대 %.3fms" % [int(AudioClock.clamp_hits),
 		float(AudioClock.max_backstep_ms)])
 	# 카메라 부드러움: 프레임당 이동량의 중앙값 대비 최대값.
@@ -104,10 +159,14 @@ func _finish(reached_end: bool, wall: float) -> void:
 	# 1 에 가까우면 곧게 따라간다. 카메라가 원을 그리면 크게 뛴다.
 	var net := _cam_first.distance_to(_cam_last)
 	var waste := _cam_path / maxf(net, 1.0)
+	var seen_net := _seen_first.distance_to(_seen_last)
+	var seen_waste := _seen_path / maxf(seen_net, 1.0)
 	print("  카메라 프레임이동 중앙 %.2fpx · p99 %.2fpx · 최대 %.2fpx · 튐배수 %.1fx"
 		% [med, p99, mx, mx / maxf(med, 0.001)])
-	print("  카메라 경로 %.0fpx / 순이동 %.0fpx = 낭비 %.2fx · 행성까지 최대 %.0fpx"
-		% [_cam_path, net, waste, _far])
+	print("  타깃 경로 낭비 %.2fx · 실제로 보이는 낭비 %.2fx · 행성까지 최대 %.0fpx"
+		% [waste, seen_waste, _far])
+	print("  흔들림(offset) 최대 %.1fpx · 흔들리는 프레임 %.1f%% (%d)"
+		% [_off_max, 100.0 * _shaking / maxf(float(_frames), 1.0), _shaking])
 
 	var pin_pct := 100.0 * _pinned / maxf(float(_pinned + _moving), 1.0)
 	print("  공전 정지 프레임 %.1f%% (%d / %d)" % [pin_pct, _pinned, _pinned + _moving])
@@ -117,6 +176,13 @@ func _finish(reached_end: bool, wall: float) -> void:
 		print("  FAIL 감시자가 타일을 전진시키지 못했다 (idx %d)" % _max_idx); fails += 1
 	if not reached_end:
 		print("  FAIL %.0fs 안에 곡 종료 미도달" % MAX_SECONDS); fails += 1
+	if autoplay and miss_every == 0 and score.total > 0:
+		# 정확한 시각에 눌렀으니 프레임 granularity(~7ms) 안에서 전부 Perfect 여야 한다.
+		if score.accuracy() < 99.0:
+			print("  FAIL 자동플레이인데 정확도가 %.2f%% 다" % score.accuracy()); fails += 1
+		if score.count_of(Judge.Verdict.TOO_LATE) > 0:
+			print("  FAIL 자동플레이인데 미스가 %d 건"
+				% score.count_of(Judge.Verdict.TOO_LATE)); fails += 1
 	if score.total < n:
 		print("  FAIL 판정 수(%d)가 타일 수(%d)보다 적다" % [score.total, n]); fails += 1
 	# 역행은 구조적으로 일어난다. 횟수가 아니라 크기로 본다.
@@ -129,9 +195,13 @@ func _finish(reached_end: bool, wall: float) -> void:
 	if mx > 20.0:
 		print("  FAIL 카메라가 한 프레임에 %.1fpx 튀었다" % mx); fails += 1
 	# 흔들림. 순간 위치를 쫓으면 경로의 지그재그를 그대로 따라가 5.9~8.2x 가 된다.
+	# 타깃이 지그재그를 그대로 쫓는지 (순간 위치 추적이면 5.9~8.2x)
 	if waste > 4.0:
-		print("  FAIL 카메라 경로 낭비 %.2fx — 지그재그를 그대로 쫓고 있나?"
+		print("  FAIL 카메라 타깃 낭비 %.2fx — 지그재그를 그대로 쫓고 있나?"
 			% waste); fails += 1
+	# 실제로 보이는 흔들림. 미스마다 흔들던 시절엔 18.01x 였다.
+	if seen_waste > 5.0:
+		print("  FAIL 화면 흔들림 낭비 %.2fx — 흔들림이 과하다" % seen_waste); fails += 1
 
 	# 렌더 커서를 판정 커서에 묶으면 여기가 20~60% 로 뛴다.
 	if pin_pct > 8.0:
