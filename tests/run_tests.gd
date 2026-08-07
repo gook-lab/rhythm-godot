@@ -31,6 +31,9 @@ func _init() -> void:
 	t_tile_positions()
 	t_landing()
 	t_beats_to_reach()
+	t_judge_windows()
+	t_judge_classify()
+	t_score()
 
 	print("\n%d passed, %d failed" % [_pass, _fail])
 	quit(_fail)
@@ -207,3 +210,119 @@ func t_beats_to_reach() -> void:
 	# 범위 밖은 0
 	eq(ChartRuntime.beats_to_reach(straight, 0), 0.0, "i=0 은 0")
 	eq(ChartRuntime.beats_to_reach(straight, 9), 0.0, "범위 밖은 0")
+
+
+## 판정창이 이웃 타일에 절대 닿지 않아야 한다.
+##
+## 고정 ±110ms 로 두면 인접 간격이 220ms 밑으로 내려가는 순간 창이 겹치고,
+## 한 번 누른 입력이 두 타일 모두에 유효해진다.
+##   0.5박 @140bpm -> 214ms 간격 -> -6ms 겹침
+##   1/6박 @340bpm -> 29ms 간격  -> 완전 붕괴
+## 겹침이 '구조적으로 불가능'한지를 여러 템포에서 확인한다.
+func t_judge_windows() -> void:
+	print("판정창 — 이웃 타일에 닿지 않도록 캡된다")
+	var j := Judge.new()
+	j.base_perfect_ms = 30.0
+	j.base_very_ms = 60.0
+	j.base_miss_ms = 110.0
+
+	# 느린 구간: 캡이 안 걸려 기준값 그대로
+	j.set_gaps(500.0, 500.0)
+	eq(j.miss_ms, 110.0, "간격 500ms — 기준값 유지")
+	eq(j.perfect_ms, 30.0, "간격 500ms — Perfect 30")
+
+	# 겹치는 케이스들: 창 폭이 간격의 절반을 못 넘어야 한다
+	for gap in [250.0, 214.0, 125.0, 29.0, 8.0]:
+		j.set_gaps(gap, gap)
+		ok(j.miss_ms * 2.0 <= gap,
+			"간격 %.0fms — 창 폭 %.1fms <= 간격" % [gap, j.miss_ms * 2.0])
+		ok(j.perfect_ms <= j.very_ms and j.very_ms <= j.miss_ms,
+			"간격 %.0fms — 사다리 순서 보존 (%.1f<=%.1f<=%.1f)"
+			% [gap, j.perfect_ms, j.very_ms, j.miss_ms])
+
+	# 사다리 비율은 눌려도 보존된다
+	j.set_gaps(100.0, 100.0)
+	var r_before := 30.0 / 110.0
+	var r_after := j.perfect_ms / j.miss_ms
+	eq(r_after, r_before, "눌려도 Perfect/Miss 비율 보존", 1e-4)
+
+	# 비대칭 간격이면 좁은 쪽을 따른다
+	j.set_gaps(500.0, 100.0)
+	ok(j.miss_ms * 2.0 <= 100.0, "앞뒤가 다르면 좁은 쪽 기준")
+
+	# 끝 타일(이웃 없음)은 기준값
+	j.set_gaps(INF, INF)
+	eq(j.miss_ms, 110.0, "이웃 없으면 기준값")
+	j.free()
+
+
+func t_judge_classify() -> void:
+	print("판정 등급 — 7등급 경계와 부호")
+	var j := Judge.new()
+	j.set_gaps(INF, INF)   # 기준창 30/60/110
+	ok(j.classify(0.0) == Judge.Verdict.PERFECT, "0ms -> PERFECT")
+	ok(j.classify(30.0) == Judge.Verdict.PERFECT, "경계 +30 -> PERFECT")
+	ok(j.classify(-30.0) == Judge.Verdict.PERFECT, "경계 -30 -> PERFECT")
+	ok(j.classify(45.0) == Judge.Verdict.LATE_PERFECT, "+45 -> LATE PERFECT")
+	ok(j.classify(-45.0) == Judge.Verdict.EARLY_PERFECT, "-45 -> EARLY PERFECT")
+	ok(j.classify(90.0) == Judge.Verdict.VERY_LATE, "+90 -> LATE!")
+	ok(j.classify(-90.0) == Judge.Verdict.VERY_EARLY, "-90 -> EARLY!")
+	ok(j.classify(200.0) == Judge.Verdict.TOO_LATE, "+200 -> TOO LATE")
+	ok(j.classify(-200.0) == Judge.Verdict.TOO_EARLY, "-200 -> TOO EARLY")
+	ok(Judge.is_miss(Judge.Verdict.TOO_LATE), "TOO_LATE 는 미스")
+	ok(Judge.is_miss(Judge.Verdict.TOO_EARLY), "TOO_EARLY 는 미스")
+	ok(not Judge.is_miss(Judge.Verdict.VERY_LATE), "VERY_LATE 는 미스 아님")
+	# 창이 좁아져도 등급 판정은 같은 규칙을 따른다
+	j.set_gaps(100.0, 100.0)   # miss 45, perfect ~12.3
+	ok(j.classify(0.0) == Judge.Verdict.PERFECT, "좁은 창에서도 0ms -> PERFECT")
+	ok(j.classify(50.0) == Judge.Verdict.TOO_LATE, "좁은 창에서 +50 -> TOO LATE")
+	j.free()
+
+
+func t_score() -> void:
+	print("점수 — 정확도·콤보·랭크")
+	var s := Score.new()
+	s.reset()
+	ok(s.rank() == "-", "판정 전엔 랭크 없음")
+
+	# 전부 일반 Perfect 면 P
+	for i in range(10):
+		s.on_judged(Judge.Verdict.PERFECT, 1.0, i)
+	eq(s.accuracy(), 100.0, "전부 Perfect -> 100%")
+	ok(s.rank() == "P", "전부 Perfect -> P 랭크")
+	ok(s.combo == 10, "콤보 10")
+
+	# E/L Perfect 가 섞이면 100% 가 아니다 — 이게 있어야 개선을 알 수 있다
+	s.reset()
+	for i in range(10):
+		s.on_judged(Judge.Verdict.LATE_PERFECT, 40.0, i)
+	ok(s.accuracy() < 100.0, "L Perfect 만 -> 100%% 미만 (%.1f%%)" % s.accuracy())
+	ok(s.rank() != "P", "L Perfect 만 -> P 아님 (%s)" % s.rank())
+
+	# 미스는 콤보를 끊는다
+	s.reset()
+	s.on_judged(Judge.Verdict.PERFECT, 0.0, 0)
+	s.on_judged(Judge.Verdict.PERFECT, 0.0, 1)
+	ok(s.combo == 2, "콤보 2")
+	s.on_judged(Judge.Verdict.TOO_LATE, INF, 2)
+	ok(s.combo == 0, "미스 후 콤보 0")
+	ok(s.max_combo == 2, "최대 콤보 2 유지")
+
+	# reset() 은 표본을 '일부러' 남긴다.
+	# 성공기준 3 이 "같은 구간 10회 반복 -> 모든 delta 를 한 표본으로" 라서,
+	# 재시작마다 표본을 날리면 산포를 잴 수가 없다.
+	ok(s.delta_stats().n == 22, "reset() 을 거쳐도 표본은 누적된다 (n=%d)"
+		% s.delta_stats().n)
+
+	# 표본만 따로 비운다
+	s.clear_samples()
+	ok(s.delta_stats().n == 0, "clear_samples() 로 표본만 비움")
+
+	# 미스(INF)는 산포 표본에 안 들어간다 — 시각이 없으므로
+	s.on_judged(Judge.Verdict.PERFECT, 5.0, 0)
+	s.on_judged(Judge.Verdict.TOO_LATE, INF, 1)
+	s.on_judged(Judge.Verdict.PERFECT, -5.0, 2)
+	var st := s.delta_stats()
+	ok(st.n == 2, "표본에 미스 제외 (n=%d)" % st.n)
+	ok(absf(st.mean) < 1e-6, "평균 %.3f (5 와 -5 라 0)" % st.mean)
+	s.free()

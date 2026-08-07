@@ -17,10 +17,22 @@ extends Node
 var _last_ms := -INF
 var _started_usec := 0
 
-## 역행 클램프가 발동한 횟수. 한 곡 재생 동안 0 이어야 한다(하드 게이트).
-## 0 이 아니면 오디오 클럭이 역행하고 있다는 뜻이고, 판정 산포의 원인이
-## 내 손이 아니라 클럭이라는 신호다.
+## 역행 클램프가 발동한 횟수.
+##
+## !! 0 을 기대하지 마라. 실측하니 20초 재생에 5~12회 난다.
+##    pos 와 since_mix 가 서로 독립적으로 갱신돼서, 믹싱 직후에 샘플링하면
+##    옛 pos 에 리셋된 since_mix 가 붙어 한 청크(~5ms)만큼 뒤로 간다.
+##    구조적으로 일어나는 일이고, 단조 클램프가 바로 그걸 막으라고 있는 것이다.
+##    (get_output_latency() 를 시작 시점에 고정해봐도 크기가 그대로였다 —
+##     latency 지터가 원인이 아니라는 뜻이다.)
+##
+## 판단은 횟수가 아니라 아래 max_backstep_ms 로 한다.
 var clamp_hits := 0
+
+## 역행의 '크기'. 횟수만으로는 판단이 안 된다 —
+## 0.05ms 짜리 역행 12번은 무해하고, 20ms 짜리 1번은 치명적이다.
+## 하드 게이트는 횟수가 아니라 이 값으로 봐야 한다.
+var max_backstep_ms := 0.0
 
 ## 사용자 캘리브레이션 오프셋(ms).
 ##
@@ -64,6 +76,7 @@ func start(stream: AudioStream) -> void:
 	_player.stream = stream
 	_last_ms = -INF
 	clamp_hits = 0
+	max_backstep_ms = 0.0
 	_started_usec = Time.get_ticks_usec()
 	_player.play()
 	song_started.emit()
@@ -103,6 +116,7 @@ func now_ms() -> float:
 	var ms := (pos + since_mix - latency) * 1000.0
 	if ms < _last_ms:
 		clamp_hits += 1
+		max_backstep_ms = maxf(max_backstep_ms, _last_ms - ms)
 	_last_ms = maxf(ms, _last_ms)  # 스레드 지터로 값이 역행할 수 있다(공식 문서 경고)
 	return _last_ms
 

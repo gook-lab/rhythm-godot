@@ -1,24 +1,38 @@
-[gd_scene load_steps=7 format=3]
+[gd_scene load_steps=9 format=3]
 
 [ext_resource type="Script" path="res://scripts/Main.gd" id="1_main"]
 [ext_resource type="Script" path="res://scripts/PlanetPair.gd" id="2_pair"]
 [ext_resource type="Script" path="res://scripts/Planet.gd" id="3_planet"]
 [ext_resource type="Script" path="res://scripts/Judge.gd" id="4_judge"]
-[ext_resource type="Resource" path="res://charts/demo.tres" id="5_chart"]
+[ext_resource type="Script" path="res://scripts/Score.gd" id="5_score"]
+[ext_resource type="Script" path="res://scripts/TimingBar.gd" id="6_bar"]
+[ext_resource type="Resource" path="res://charts/demo.tres" id="7_chart"]
+
+[sub_resource type="Environment" id="Env_1"]
+background_mode = 3
+glow_enabled = true
+glow_intensity = 1.1
+glow_strength = 1.05
+glow_bloom = 0.25
+glow_blend_mode = 1
+glow_hdr_threshold = 0.85
 
 [node name="Main" type="Node2D"]
 script = ExtResource("1_main")
-chart = ExtResource("5_chart")
+chart = ExtResource("7_chart")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Env_1")
 
 [node name="World" type="Node2D" parent="."]
 
 [node name="Camera2D" type="Camera2D" parent="World"]
 position_smoothing_enabled = true
-position_smoothing_speed = 8.0
+position_smoothing_speed = 10.0
 
 [node name="Path" type="Line2D" parent="World"]
-width = 10.0
-default_color = Color(0.35, 0.38, 0.48, 1)
+width = 12.0
+default_color = Color(0.42, 0.46, 0.62, 1)
 joint_mode = 2
 begin_cap_mode = 2
 end_cap_mode = 2
@@ -29,24 +43,68 @@ script = ExtResource("2_pair")
 
 [node name="PlanetA" type="Node2D" parent="World/PlanetPair"]
 script = ExtResource("3_planet")
-color = Color(0.98, 0.42, 0.33, 1)
+color = Color(1.35, 0.45, 0.35, 1)
 
 [node name="PlanetB" type="Node2D" parent="World/PlanetPair"]
 script = ExtResource("3_planet")
-color = Color(0.35, 0.72, 0.98, 1)
+color = Color(0.4, 0.9, 1.45, 1)
 
 [node name="JudgmentPopup" type="Label" parent="World"]
-offset_right = 220.0
-offset_bottom = 34.0
+offset_right = 300.0
+offset_bottom = 70.0
 theme_override_font_sizes/font_size = 26
 
 [node name="Judge" type="Node" parent="."]
 script = ExtResource("4_judge")
 
+[node name="Score" type="Node" parent="."]
+script = ExtResource("5_score")
+
 [node name="UI" type="CanvasLayer" parent="."]
 
+[node name="HUD" type="VBoxContainer" parent="UI"]
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -380.0
+offset_top = 16.0
+offset_right = -16.0
+offset_bottom = 140.0
+grow_horizontal = 0
+
+[node name="ScoreLabel" type="Label" parent="UI/HUD"]
+theme_override_font_sizes/font_size = 26
+horizontal_alignment = 2
+text = "-  100.00%   combo 0"
+
+[node name="InfoLabel" type="Label" parent="UI/HUD"]
+theme_override_font_sizes/font_size = 15
+horizontal_alignment = 2
+text = "..."
+
+[node name="TimingPanel" type="PanelContainer" parent="UI"]
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -260.0
+offset_top = -96.0
+offset_right = 260.0
+offset_bottom = -20.0
+grow_horizontal = 2
+grow_vertical = 0
+
+[node name="VBox" type="VBoxContainer" parent="UI/TimingPanel"]
+
+[node name="Bar" type="Control" parent="UI/TimingPanel/VBox"]
+custom_minimum_size = Vector2(500, 30)
+script = ExtResource("6_bar")
+
+[node name="TimingLabel" type="Label" parent="UI/TimingPanel/VBox"]
+theme_override_font_sizes/font_size = 13
+horizontal_alignment = 1
+text = "..."
+
 [node name="CalibrationPanel" type="PanelContainer" parent="UI"]
-anchors_preset = 2
 anchor_top = 1.0
 anchor_bottom = 1.0
 offset_left = 16.0
@@ -73,9 +131,9 @@ text = "판정이 Late 로 치우치면 + 방향으로"
 [node name="DebugOverlay" type="PanelContainer" parent="UI"]
 offset_left = 16.0
 offset_top = 16.0
-offset_right = 496.0
-offset_bottom = 116.0
+offset_right = 520.0
+offset_bottom = 52.0
 
 [node name="DebugLabel" type="Label" parent="UI/DebugOverlay"]
-theme_override_font_sizes/font_size = 14
+theme_override_font_sizes/font_size = 13
 text = "..."

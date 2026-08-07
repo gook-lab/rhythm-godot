@@ -3,7 +3,7 @@ extends Node2D
 ## 배선 + TileCursor 상태. 이 게임의 상태는 여기 한 곳에만 있다.
 ##
 ## 두 주체가 시간을 본다:
-##   _process  = 감시자. 무입력 Miss 를 확정하고 공전각을 갱신한다.
+##   _process  = 감시자. 무입력 Miss 를 확정하고 공전각·카메라를 갱신한다.
 ##   _input    = 입력자. 스페이스 입력을 판정한다.
 ##
 ## 감시자가 왜 필요한가:
@@ -21,19 +21,24 @@ const TILE_SPACING := 96.0
 @onready var _planets: PlanetPair = $World/PlanetPair
 @onready var _popup: Label = $World/JudgmentPopup
 @onready var _judge: Judge = $Judge
+@onready var _score: Score = $Score
 @onready var _offset_slider: HSlider = $UI/CalibrationPanel/VBox/OffsetSlider
 @onready var _offset_label: Label = $UI/CalibrationPanel/VBox/OffsetLabel
 @onready var _debug: Label = $UI/DebugOverlay/DebugLabel
+@onready var _hud_score: Label = $UI/HUD/ScoreLabel
+@onready var _hud_info: Label = $UI/HUD/InfoLabel
+@onready var _timing_bar: TimingBar = $UI/TimingPanel/VBox/Bar
+@onready var _timing_label: Label = $UI/TimingPanel/VBox/TimingLabel
 
 var _hit_times := PackedFloat32Array()
 var _positions := PackedVector2Array()
 ## 다음에 밟을 타일. 0 은 출발점이라 1 에서 시작한다.
 var _idx := 1
 var _finished := false
+var _song_len_ms := 0.0
 
-## 판정 오차 표본. 재시작을 넘어 누적된다 — 성공기준 3(같은 구간 10회 반복)이
-## 재시작마다 표본을 날리면 잴 수가 없다.
-var _deltas: Array[float] = []
+## 미스 화면 흔들림 잔량(px). 0 으로 감쇠한다.
+var _shake := 0.0
 
 
 func _ready() -> void:
@@ -45,10 +50,12 @@ func _ready() -> void:
 
 	_hit_times = ChartRuntime.hit_times_ms(chart)
 	_positions = ChartRuntime.tile_positions(chart.angles, TILE_SPACING)
+	_song_len_ms = chart.audio.get_length() * 1000.0
 	_draw_path()
 
 	_offset_slider.value_changed.connect(_on_offset_changed)
 	_on_offset_changed(_offset_slider.value)
+	_judge.judged.connect(_score.on_judged)
 	_judge.judged.connect(_on_judged)
 	AudioClock.song_finished.connect(_on_song_finished)
 
@@ -58,12 +65,10 @@ func _ready() -> void:
 func _restart() -> void:
 	_idx = 1
 	_finished = false
+	_shake = 0.0
 	_popup.text = ""
-	_planets.configure(
-		_positions[0],
-		ChartRuntime.orbit_start_deg(chart.angles, 1),
-		ChartRuntime.orbit_sweep_deg(chart.angles, 1),
-		TILE_SPACING)
+	_score.reset()   # 표본(deltas)은 남긴다 — 산포 측정이 세션 단위다
+	_apply_tile(1)
 	_planets.set_orbit_progress(0.0)
 	AudioClock.start(chart.audio)
 
@@ -74,8 +79,39 @@ func _draw_path() -> void:
 		_path.add_point(p)
 
 
+## 타일 i 로 가는 공전과 판정창을 세팅한다.
+func _apply_tile(i: int) -> void:
+	if i >= chart.angles.size():
+		return
+	_planets.configure(
+		_positions[i - 1],
+		ChartRuntime.orbit_start_deg(chart.angles, i),
+		ChartRuntime.orbit_sweep_deg(chart.angles, i),
+		TILE_SPACING)
+	# 판정창을 이웃 타일까지의 거리로 캡한다. 이게 없으면 빠른 구간에서 창이 겹쳐
+	# 한 번 누른 입력이 두 타일 모두에 유효해진다.
+	_judge.set_gaps(_gap_before(i), _gap_after(i))
+	_timing_bar.set_windows(_judge.perfect_ms, _judge.very_ms, _judge.miss_ms)
+
+
+func _gap_before(i: int) -> float:
+	if i <= 0 or i >= _hit_times.size():
+		return INF
+	return _hit_times[i] - _hit_times[i - 1]
+
+
+func _gap_after(i: int) -> float:
+	if i + 1 >= _hit_times.size():
+		return INF
+	return _hit_times[i + 1] - _hit_times[i]
+
+
 # ------------------------------------------------------------------ 감시자
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	# 화면 흔들림은 오디오 클럭과 무관한 순수 연출이라 프레임 시간으로 감쇠시킨다.
+	if _shake > 0.01:
+		_shake = maxf(0.0, _shake - delta * 60.0)
+
 	if _finished or not AudioClock.is_warm():
 		return
 	var t := AudioClock.judged_ms()
@@ -98,15 +134,22 @@ func _process(_delta: float) -> void:
 	_planets.set_orbit_progress(u)
 
 	# 카메라도 같은 t 에서 파생한다. 별도 트윈을 두면 그게 또 하나의 시간축이 된다.
-	_camera.position = _positions[_idx - 1].lerp(_positions[_idx], u)
+	var base := _positions[_idx - 1].lerp(_positions[_idx], u)
+	_camera.position = base + _shake_offset()
 
-	_update_debug(t)
+	_update_hud(t)
+
+
+func _shake_offset() -> Vector2:
+	if _shake <= 0.01:
+		return Vector2.ZERO
+	# 프레임마다 방향이 바뀌는 고주파 흔들림. 미스에만 쓴다.
+	var a := randf() * TAU
+	return Vector2(cos(a), sin(a)) * _shake
 
 
 # ------------------------------------------------------------------ 입력자
 func _input(event: InputEvent) -> void:
-	if _finished:
-		return
 	if not (event is InputEventKey):
 		return
 	var k := event as InputEventKey
@@ -117,7 +160,7 @@ func _input(event: InputEvent) -> void:
 	if k.keycode == KEY_R:
 		_restart()
 		return
-	if k.keycode != KEY_SPACE:
+	if _finished or k.keycode != KEY_SPACE:
 		return
 	# 워밍업 중 입력을 여기서 막는다. 안 막으면 곡 맨 앞 입력이
 	# 이유 없이 Miss 로 기록되어 산포 표본을 오염시킨다.
@@ -135,33 +178,32 @@ func _input(event: InputEvent) -> void:
 		return
 
 	_judge.judge_input(delta, _idx)
-	_deltas.append(delta)
 	_advance()
 
 
 func _advance() -> void:
 	_idx += 1
 	_planets.swap_roles()
-	if _idx < chart.angles.size():
-		_planets.configure(
-			_positions[_idx - 1],
-			ChartRuntime.orbit_start_deg(chart.angles, _idx),
-			ChartRuntime.orbit_sweep_deg(chart.angles, _idx),
-			TILE_SPACING)
+	_apply_tile(_idx)
 
 
 func _on_judged(v: Judge.Verdict, delta_ms: float, _tile: int) -> void:
 	_popup.text = Judge.verdict_name(v)
-	_popup.position = _positions[mini(_idx, _positions.size() - 1)] + Vector2(-40, -70)
+	if is_finite(delta_ms):
+		_popup.text += "  %+.0fms" % delta_ms
+		_timing_bar.push(delta_ms)
+	_popup.position = _positions[mini(_idx, _positions.size() - 1)] + Vector2(-60, -80)
+
 	match v:
 		Judge.Verdict.PERFECT:
 			_planets.flash(Color(0.6, 1.0, 0.7))
-		Judge.Verdict.MISS:
-			_planets.flash(Color(1.0, 0.4, 0.4))
-		_:
+		Judge.Verdict.EARLY_PERFECT, Judge.Verdict.LATE_PERFECT:
+			_planets.flash(Color(0.8, 1.0, 0.6))
+		Judge.Verdict.VERY_EARLY, Judge.Verdict.VERY_LATE:
 			_planets.flash(Color(1.0, 0.9, 0.5))
-	if is_finite(delta_ms):
-		_popup.text += " %+.0fms" % delta_ms
+		_:
+			_planets.flash(Color(1.0, 0.4, 0.4))
+			_shake = 14.0
 
 
 func _on_song_finished() -> void:
@@ -169,7 +211,11 @@ func _on_song_finished() -> void:
 		return
 	_finished = true
 	AudioClock.stop()
-	_popup.text = "FINISHED  —  R 로 재시작"
+	var s := _score.delta_stats()
+	_popup.text = "FINISHED  %s  %.2f%%\nR 로 재시작" % [_score.rank(), _score.accuracy()]
+	print("[결과] %s | 표본 %d | 평균 %+.1fms | 표준편차 %.1fms | 역행 %d회 최대 %.3fms"
+		% [_score.summary_line(), s.n, s.mean, s.sd,
+		   AudioClock.clamp_hits, AudioClock.max_backstep_ms])
 
 
 func _on_offset_changed(v: float) -> void:
@@ -177,21 +223,28 @@ func _on_offset_changed(v: float) -> void:
 	_offset_label.text = "오프셋 %+.0f ms" % v
 
 
-# ------------------------------------------------------------------ 계측
-func _update_debug(t: float) -> void:
-	var mean := 0.0
-	var sd := 0.0
-	var n := _deltas.size()
-	if n > 0:
-		for d in _deltas:
-			mean += d
-		mean /= n
-		for d in _deltas:
-			sd += (d - mean) * (d - mean)
-		sd = sqrt(sd / n)
-	_debug.text = (
-		"tile %d/%d   t %.0fms\n" % [_idx, _hit_times.size() - 1, t]
-		+ "표본 %d   평균 %+.1fms   표준편차 %.1fms\n" % [n, mean, sd]
-		+ "clamp_hits %d   (0 이어야 함 — 하드 게이트)\n" % AudioClock.clamp_hits
-		+ "output_latency %.1fms   fps %d" % [AudioClock.output_latency_ms(), Engine.get_frames_per_second()]
-	)
+# ------------------------------------------------------------------ HUD
+func _update_hud(t: float) -> void:
+	_hud_score.text = _score.summary_line()
+
+	# 체감 BPM = 타일 BPM / 현재 홉 박자.
+	# 1/6박 홉을 340bpm 으로 밟으면 체감 2040 이다. 얼불춤 오버레이가 보여주는 값이고,
+	# 판정창이 왜 좁아져야 하는지를 화면에서 바로 보여준다.
+	var hop := ChartRuntime.beats_to_reach(chart.angles, _idx)
+	var felt := chart.bpm / hop if hop > 0.0 else chart.bpm
+	_hud_info.text = "음악 %s / %s\n타일 BPM %.0f   체감 BPM %.0f\n타일 %d / %d" % [
+		_fmt_time(t), _fmt_time(_song_len_ms), chart.bpm, felt,
+		_idx, _hit_times.size() - 1]
+
+	var s := _score.delta_stats()
+	_timing_label.text = "판정창 ±%.0fms (Perfect ±%.0f)   표본 %d   평균 %+.1f   σ %.1f" % [
+		_judge.miss_ms, _judge.perfect_ms, s.n, s.mean, s.sd]
+
+	_debug.text = "역행 %d회 (최대 %.2fms)   output_latency %.1fms   fps %d" % [
+		AudioClock.clamp_hits, AudioClock.max_backstep_ms,
+		AudioClock.output_latency_ms(), Engine.get_frames_per_second()]
+
+
+static func _fmt_time(ms: float) -> String:
+	var sec := maxf(ms, 0.0) / 1000.0
+	return "%d:%02d" % [int(sec) / 60, int(sec) % 60]
