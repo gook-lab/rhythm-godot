@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="Chart" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/Chart.gd" id="1_chart"]
+[ext_resource type="AudioStream" path="res://assets/test_song.wav" id="2_audio"]
+
+[resource]
+script = ExtResource("1_chart")
+bpm = 120
+angles = PackedFloat32Array(0, 0, 0, 0, 0, 270, 180, 90, 180, 180, 180, 180, 180, 180, 180, 180, 180, 0, 180, 180, 180, 180, 270, 180, 180, 180, 0, 180, 180, 180, 180, 180, 180, 180, 180)
+start_offset_ms = 1500
+audio = ExtResource("2_audio")
+twirl_tiles = PackedInt32Array(8, 18, 23)
+speed_changes = PackedVector2Array(18, 1.5, 30, 1)
+title = "MIDI 픽스처 (템포 120-180-120)"

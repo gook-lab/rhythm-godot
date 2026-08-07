@@ -5,10 +5,12 @@ export.cfg
 export_presets.cfg
 *.translation
 
-# 생성 자산 — tools/make_click.py 로 언제든 재생성된다.
+# 생성 자산 — tools/ 의 생성기로 언제든 재생성된다.
 # WAV 는 60초에 5.7MB 라 레포에 넣지 않는다.
 assets/*.wav
 assets/*.ogg
+assets/*.mid
+assets/*.expected.json
 
 # 검증용으로 내려받은 남의 레벨 파일 (라이선스 불명)
 tools/samples/

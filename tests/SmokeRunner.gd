@@ -55,11 +55,17 @@ func _ready() -> void:
 
 	var args := OS.get_cmdline_user_args()
 	autoplay = args.has("--autoplay")
+	var chart_path := ""
 	for a in args:
 		if a.begins_with("--miss-every="):
 			miss_every = int(a.split("=")[1])
+		elif a.begins_with("--chart="):
+			chart_path = a.split("=")[1]
 	var scene: PackedScene = load("res://scenes/Main.tscn")
 	_main = scene.instantiate()
+	if chart_path != "":
+		# add_child 전에 바꿔야 _ready 가 이 차트로 초기화된다 (InputRunner 와 같은 패턴)
+		_main.set("chart", load(chart_path))
 	add_child(_main)
 	_t0 = Time.get_ticks_usec()
 	var chart: Chart = _main.get("chart")

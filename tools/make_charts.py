@@ -130,7 +130,9 @@ def verify(ang, hops_wanted, twirls=()):
 
 
 def fmt(x):
-    return "%g" % x
+    # %g 는 6유효숫자라 2/3 같은 속도 배율이 0.666667 로 잘려
+    # 긴 곡에서 히트타임이 밀린다. %.9g 는 .tres 의 float 정밀도보다 넉넉하다.
+    return "%.9g" % x
 
 
 # 카운트인(박). 첫 타일 앞에 두는 여유다.
@@ -190,29 +192,43 @@ def chart_from_song(meta_path, name, title, audio_res, speed_marks=None,
     bpm = float(meta["bpm"])
     onsets = meta["melody_onsets_beats"]
 
+    # 속도 표시는 인자 우선, 없으면 메타(midi2song 이 넣는다), 그것도 없으면 없음.
+    if speed_marks is None:
+        speed_marks = meta.get("speed_marks_beats") or []
+
     # 토끼/달팽이: (박, 배율) -> (타일 인덱스, 배율)
     # 타일 i 는 onsets[i-1] 에 떨어지므로, 그 박 이상인 첫 온셋을 찾는다.
+    # 주의: 게임은 홉 단위 상수 배속이라, 변경 박이 온셋과 일치해야 정확하다.
+    # (midi2song 은 변경 지점에 타일을 강제 삽입해서 이를 보장한다)
     speed_changes = []
-    for beat, mult in (speed_marks or []):
+    for beat, mult in speed_marks:
         idx = next((k for k, o in enumerate(onsets) if o >= beat - 1e-9), None)
         if idx is None:
             continue
+        if abs(onsets[idx] - beat) > 1e-6:
+            print("  !! 속도 변경 %.4f박이 온셋과 어긋남(가장 가까운 %.4f) — 홉 중간 변경은 표현 불가"
+                  % (beat, onsets[idx]))
         speed_changes.append((idx + 1, mult))
     gaps = [round(onsets[i] - onsets[i - 1], 6) for i in range(1, len(onsets))]
-    start_beat = onsets[0] - 1.0
-    assert start_beat > 0, "첫 온셋이 1박보다 빨라서 카운트인을 못 넣는다"
+
+    # 벽시계 시작점: 메타가 주면 그대로(가변 템포 경로), 없으면 상수 템포 공식.
+    so_ms = meta.get("start_offset_ms")
+    if so_ms is None:
+        start_beat = onsets[0] - 1.0
+        assert start_beat > 0, "첫 온셋이 1박보다 빨라서 카운트인을 못 넣는다"
+        so_ms = start_beat * 60000.0 / bpm
     global AUDIO
     prev_audio = AUDIO
     AUDIO = audio_res
     try:
         ang = write_tres(name, title, bpm, gaps,
-                         start_offset_ms=start_beat * 60000.0 / bpm,
+                         start_offset_ms=so_ms,
                          speed_changes=speed_changes,
                          loop_guard_deg=loop_guard_deg)
     finally:
         AUDIO = prev_audio
-    print("%-20s 첫 온셋 %g박 -> 카운트인 %.2fs · 심판 타일 %d"
-          % ("", onsets[0], start_beat * 60.0 / bpm, len(gaps) + 1))
+    print("%-20s 첫 온셋 %g박 -> 타일0 @ %.3fs · 심판 타일 %d"
+          % ("", onsets[0], so_ms / 1000.0, len(gaps) + 1))
     if speed_changes:
         print("%-20s 속도 타일: %s" % ("", " ".join(
             "%s타일%d x%g" % ("토끼" if m > 1 else "달팽이", i, m)
