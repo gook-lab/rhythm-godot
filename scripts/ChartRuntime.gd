@@ -47,6 +47,27 @@ static func beats_for_tile(prev: float, cur: float) -> float:
 	return sweep / 180.0
 
 
+## 타일 i 로 공전해 갈 때의 '들어온 방향'.
+##
+## 타일 i 로 가는 공전은 축이 타일 i-1 이고, 도는 행성이 타일 i-2 에서 출발해
+## 타일 i 에 착지한다. 그러므로 스윕을 정하는 두 값은
+##   들어온 방향 = angles[i-2]  ·  나갈 방향 = angles[i-1]
+## 이다. angles[i] 가 아니다 — 그건 타일 i 에서 그 다음으로 나갈 방향이라 한 칸 미래다.
+##
+## i == 1 은 진입 방향이 없다(그 앞에 타일이 없다). 직선으로 들어온 것으로 친다.
+static func incoming_deg(angles: PackedFloat32Array, i: int) -> float:
+	if i >= 2:
+		return angles[i - 2]
+	return angles[0]
+
+
+## 타일 i 에 도달하는 데 걸리는 박자.
+static func beats_to_reach(angles: PackedFloat32Array, i: int) -> float:
+	if i <= 0 or i >= angles.size():
+		return 0.0
+	return beats_for_tile(incoming_deg(angles, i), angles[i - 1])
+
+
 ## 각 타일을 밟아야 하는 절대 시각(ms)의 누적 배열.
 ## 길이는 chart.angles.size() 와 같고, [0] 은 출발점이라 판정 대상이 아니다.
 static func hit_times_ms(chart: Chart) -> PackedFloat32Array:
@@ -65,7 +86,7 @@ static func hit_times_ms(chart: Chart) -> PackedFloat32Array:
 	out[0] = chart.start_offset_ms  # 타일 0 = 출발점, 판정 없음
 	var spb := 60000.0 / chart.bpm  # ms per beat
 	for i in range(1, chart.angles.size()):
-		out[i] = out[i - 1] + beats_for_tile(chart.angles[i - 1], chart.angles[i]) * spb
+		out[i] = out[i - 1] + beats_to_reach(chart.angles, i) * spb
 	return out
 
 
@@ -84,16 +105,25 @@ static func tile_positions(angles: PackedFloat32Array, spacing: float) -> Packed
 	return out
 
 
-## 타일 i 로 진입할 때 공전이 시작되는 각도(도).
-## 공전하는 행성은 pivot 뒤쪽 = 진입 방향의 반대편에서 출발한다.
+## 타일 i 로 가는 공전의 시작 각도(도). 축(타일 i-1)에서 본 타일 i-2 의 방향이다.
 static func orbit_start_deg(angles: PackedFloat32Array, i: int) -> float:
 	if i <= 0 or i >= angles.size():
 		return 0.0
-	return normalize360(angles[i - 1] + 180.0)
+	return normalize360(incoming_deg(angles, i) + 180.0)
 
 
-## 타일 i 로 진입할 때의 스윕각(도). beats_for_tile 과 같은 양을 도 단위로 준다.
+## 타일 i 로 가는 공전의 스윕각(도). 대기 박자와 같은 양을 도 단위로 준다.
 static func orbit_sweep_deg(angles: PackedFloat32Array, i: int) -> float:
+	return beats_to_reach(angles, i) * 180.0
+
+
+## 공전이 끝나는 각도. 정의상 반드시 angles[i-1] 이어야 하고,
+## 그래야 도는 행성이 정확히 타일 i 에 착지한다.
+##   start + sweep = (in+180) + normalize360(out - (in+180)) = out = angles[i-1]
+## 이 항등식이 깨지면 행성이 타일에서 벗어난 곳에 내렸다가 튄다 —
+## 직선 구간에선 안 보이고 꺾이는 데서만 드러나는 종류의 버그다.
+## tests/run_tests.gd 의 t_landing() 이 이걸 좌표로 잠근다.
+static func orbit_end_deg(angles: PackedFloat32Array, i: int) -> float:
 	if i <= 0 or i >= angles.size():
 		return 0.0
-	return beats_for_tile(angles[i - 1], angles[i]) * 180.0
+	return normalize360(angles[i - 1])

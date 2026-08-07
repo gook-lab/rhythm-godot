@@ -29,6 +29,8 @@ func _init() -> void:
 	t_bad_bpm()
 	t_monotonic()
 	t_tile_positions()
+	t_landing()
+	t_beats_to_reach()
 
 	print("\n%d passed, %d failed" % [_pass, _fail])
 	quit(_fail)
@@ -154,3 +156,54 @@ func t_tile_positions() -> void:
 	var q := ChartRuntime.tile_positions(PackedFloat32Array([90.0, 90.0]), 100.0)
 	if q.size() == 2:
 		eq(q[1].y, -100.0, "90도는 화면 위쪽(-y)")
+
+
+## 이 게임에서 가장 중요한 불변식:
+## 도는 행성이 공전을 마쳤을 때 반드시 '다음 타일 위'에 있어야 한다.
+##
+## 이게 깨지면 직선 구간에선 멀쩡해 보이고 꺾이는 데서만 튄다 —
+## 눈으로 잡기 어렵고, 잡아도 원인이 공식인지 렌더인지 판정인지 헷갈린다.
+## 실제로 첫 구현이 여기서 한 타일 밀려 있었고(angles[i-1],angles[i] 를 썼다),
+## 90도 턴 네 번이 연속되는 사각 구간에서 눈에 띄어서 발견됐다.
+## 좌표로 잠근다.
+func t_landing() -> void:
+	print("착지 불변식 — 공전 끝점이 정확히 다음 타일 좌표여야 한다")
+	const R := 96.0
+	var cases := {
+		"직선": [0.0, 0.0, 0.0, 0.0],
+		"90도 계단": [0.0, 90.0, 0.0, 270.0, 0.0],
+		"사각형(90도 4연속)": [0.0, 270.0, 180.0, 90.0, 0.0],
+		"U턴": [0.0, 180.0, 0.0],
+		"랩어라운드": [350.0, 10.0, 350.0, 10.0],
+		"임의 15도격자": [15.0, 105.0, 240.0, 60.0, 330.0, 195.0],
+	}
+	for name in cases:
+		var angles := PackedFloat32Array(cases[name])
+		var pos := ChartRuntime.tile_positions(angles, R)
+		var worst := 0.0
+		for i in range(1, angles.size()):
+			var pivot: Vector2 = pos[i - 1]
+			var a := ChartRuntime.orbit_start_deg(angles, i)
+			var s := ChartRuntime.orbit_sweep_deg(angles, i)
+			var end := deg_to_rad(a + s)
+			var landed := pivot + Vector2(cos(end), -sin(end)) * R
+			worst = maxf(worst, landed.distance_to(pos[i]))
+		ok(worst < 0.01, "%s — 최대 착지 오차 %.4f px" % [name, worst])
+
+
+func t_beats_to_reach() -> void:
+	print("도달 박자 — 진입방향(angles[i-2])과 나갈방향(angles[i-1])으로 정해진다")
+	# 타일 1 은 진입 방향이 없다. 직선으로 간주해 1박.
+	var straight := PackedFloat32Array([0.0, 0.0, 0.0])
+	eq(ChartRuntime.beats_to_reach(straight, 1), 1.0, "첫 홉은 항상 1박")
+	eq(ChartRuntime.beats_to_reach(straight, 2), 1.0, "직선 2번째 홉 1박")
+
+	# 타일 1 에서 90도 꺾으면, 그 영향은 '타일 2 로 가는 홉'에 나타난다.
+	# 타일 1 로 가는 홉이 아니다 — 한 칸 밀리면 여기서 걸린다.
+	var turn := PackedFloat32Array([0.0, 90.0, 90.0])
+	eq(ChartRuntime.beats_to_reach(turn, 1), 1.0, "턴 전 홉은 여전히 1박")
+	eq(ChartRuntime.beats_to_reach(turn, 2), 1.5, "타일1의 +90도가 타일2 홉에 나타난다")
+
+	# 범위 밖은 0
+	eq(ChartRuntime.beats_to_reach(straight, 0), 0.0, "i=0 은 0")
+	eq(ChartRuntime.beats_to_reach(straight, 9), 0.0, "범위 밖은 0")
