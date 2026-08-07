@@ -37,7 +37,7 @@ const SHAKE_MIN_COMBO := 3
 
 @export var chart: Chart
 
-@onready var _path: Line2D = $World/Path
+@onready var _path: TilePath = $World/Path
 @onready var _markers: SpeedMarkers = $World/SpeedMarkers
 @onready var _camera: Camera2D = $World/Camera2D
 @onready var _planets: PlanetPair = $World/PlanetPair
@@ -116,6 +116,7 @@ func _restart() -> void:
 	_popup.text = ""
 	_score.reset()   # 표본(deltas)은 남긴다 — 산포 측정이 세션 단위다
 	_planets.clear_trails()
+	_path.clear_impacts()
 	_configure_orbit(1)
 	_apply_windows(1)
 	_planets.set_orbit_progress(0.0)
@@ -129,9 +130,7 @@ func _restart() -> void:
 
 
 func _draw_path() -> void:
-	_path.clear_points()
-	for p in _positions:
-		_path.add_point(p)
+	_path.setup(_positions, chart.angles, TILE_SPACING)
 
 
 ## 렌더: 타일 i 로 가는 공전을 세팅한다. (렌더 커서 _vis 를 따른다)
@@ -203,6 +202,7 @@ func _process(delta: float) -> void:
 	var span := t1 - t0
 	var u := 0.0 if span <= 0.0 else clampf((t - t0) / span, 0.0, 1.0)
 	_last_u = u
+	_path.set_cursor(vi)
 	_planets.set_orbit_progress(u)
 
 	# 흔들림은 position 이 아니라 offset 으로 준다 —
@@ -293,7 +293,15 @@ func _advance() -> void:
 var _prev_combo := 0
 
 
-func _on_judged(v: Judge.Verdict, delta_ms: float, _tile: int) -> void:
+static func _verdict_color(v: Judge.Verdict) -> Color:
+	match v:
+		Judge.Verdict.PERFECT: return Color(0.55, 1.35, 0.80)
+		Judge.Verdict.EARLY_PERFECT, Judge.Verdict.LATE_PERFECT: return Color(0.85, 1.25, 0.55)
+		Judge.Verdict.VERY_EARLY, Judge.Verdict.VERY_LATE: return Color(1.30, 1.05, 0.45)
+		_: return Color(1.35, 0.40, 0.40)
+
+
+func _on_judged(v: Judge.Verdict, delta_ms: float, tile: int) -> void:
 	_prev_combo = _score.combo   # Score 가 아직 갱신 전이라 '직전' 값이다
 	_popup.text = Judge.verdict_name(v)
 	if is_finite(delta_ms):
@@ -301,15 +309,19 @@ func _on_judged(v: Judge.Verdict, delta_ms: float, _tile: int) -> void:
 		_timing_bar.push(delta_ms)
 	_popup.position = _positions[mini(_vis, _positions.size() - 1)] + Vector2(-60, -80)
 
+	var vc := _verdict_color(v)
+	# 밟은 타일이 판정 색으로 부풀었다 사라진다. 어느 타일을 어떻게 밟았는지가
+	# 경로 위에 그대로 남아서, 다음 구간을 준비하면서도 직전 결과를 읽을 수 있다.
+	_path.impact(tile, vc)
 	match v:
 		Judge.Verdict.PERFECT:
-			_planets.flash(Color(0.6, 1.0, 0.7))
+			_planets.flash(vc)
 		Judge.Verdict.EARLY_PERFECT, Judge.Verdict.LATE_PERFECT:
-			_planets.flash(Color(0.8, 1.0, 0.6))
+			_planets.flash(vc)
 		Judge.Verdict.VERY_EARLY, Judge.Verdict.VERY_LATE:
-			_planets.flash(Color(1.0, 0.9, 0.5))
+			_planets.flash(vc)
 		_:
-			_planets.flash(Color(1.0, 0.4, 0.4))
+			_planets.flash(vc)
 			# 콤보가 실제로 끊길 때만 흔든다. 이미 끊긴 상태에서 계속 미스하는 건
 			# 잃을 게 없으므로 흔들 이유도 없다. (on_judged 가 먼저 불려서
 			# 여기 도달할 땐 combo 가 이미 0 이므로 직전 값을 쓴다)

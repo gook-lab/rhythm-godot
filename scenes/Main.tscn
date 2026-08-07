@@ -1,4 +1,4 @@
-[gd_scene load_steps=10 format=3]
+[gd_scene load_steps=11 format=3]
 
 [ext_resource type="Script" path="res://scripts/Main.gd" id="1_main"]
 [ext_resource type="Script" path="res://scripts/PlanetPair.gd" id="2_pair"]
@@ -7,16 +7,17 @@
 [ext_resource type="Script" path="res://scripts/Score.gd" id="5_score"]
 [ext_resource type="Script" path="res://scripts/TimingBar.gd" id="6_bar"]
 [ext_resource type="Script" path="res://scripts/SpeedMarkers.gd" id="8_mark"]
+[ext_resource type="Script" path="res://scripts/TilePath.gd" id="9_tile"]
 [ext_resource type="Resource" path="res://charts/song140.tres" id="7_chart"]
 
 [sub_resource type="Environment" id="Env_1"]
 background_mode = 3
 glow_enabled = true
-glow_intensity = 1.1
-glow_strength = 1.05
-glow_bloom = 0.25
+glow_intensity = 1.6
+glow_strength = 1.25
+glow_bloom = 0.45
 glow_blend_mode = 1
-glow_hdr_threshold = 0.85
+glow_hdr_threshold = 0.75
 
 [node name="Main" type="Node2D"]
 script = ExtResource("1_main")
@@ -31,13 +32,8 @@ environment = SubResource("Env_1")
 position_smoothing_enabled = true
 position_smoothing_speed = 10.0
 
-[node name="Path" type="Line2D" parent="World"]
-width = 12.0
-default_color = Color(0.42, 0.46, 0.62, 1)
-joint_mode = 2
-begin_cap_mode = 2
-end_cap_mode = 2
-antialiased = true
+[node name="Path" type="Node2D" parent="World"]
+script = ExtResource("9_tile")
 
 [node name="SpeedMarkers" type="Node2D" parent="World"]
 script = ExtResource("8_mark")
