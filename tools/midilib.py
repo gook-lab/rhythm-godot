@@ -172,6 +172,70 @@ class TempoMap:
         return bpm
 
 
+# ------------------------------------------------------- 템포 잡음 제거
+def _fit_bpm(entries, lo, hi, end_beat):
+    """entries[lo:hi] 구간을 대체할 '총 시간이 같은' 단일 bpm.
+
+    시간 보존이 핵심이다. 평균 bpm 을 쓰면 구간 길이가 변해서
+    잡음이 누적 드리프트로 바뀐다.
+    """
+    b0 = entries[lo][0]
+    b1 = entries[hi][0] if hi < len(entries) else end_beat
+    sec = 0.0
+    for k in range(lo, hi):
+        s = entries[k][0]
+        # end_beat 이 마지막 템포 이벤트보다 앞일 수 있다(노트가 먼저 끝나는 경우).
+        # 구간을 음수로 두면 적분이 망가지므로 0 으로 눌러 둔다.
+        e = max(s, entries[k + 1][0] if k + 1 < hi else b1)
+        sec += (e - s) * 60.0 / entries[k][1]
+    if sec <= 0.0:
+        return entries[lo][1]
+    return (b1 - b0) * 60.0 / sec
+
+
+def dejitter_tempos(entries, end_beat, tol=0.10):
+    """전사 MIDI 의 템포 '측정 잡음'을 걷어내고 '의도된 변경'만 남긴다.
+
+    오디오→MIDI 전사기(Mureka 스템 등)는 박마다 템포 이벤트를 찍는다.
+    실측(Neon Orbit, 2026-08-07): 317박 전부에 이벤트가 있고 값은
+    125 / 130.435 / 136.364 세 개뿐 — 박 길이로는 0.48 / 0.46 / 0.44 초,
+    즉 20ms 격자다. 실제로는 128bpm 상수인 곡을 20ms 해상도로 재어
+    반올림한 잡음이었다(상수 128 대비 편차가 추세 없이 ±36ms 안에서 진동).
+
+    이걸 그대로 두면 변경 지점마다 토끼/달팽이 타일이 박힌다(실측 254개).
+    게다가 변경이 홉 중간에 떨어지면 게임의 '홉당 상수 배속' 모델로는
+    표현 자체가 안 되어 히트타임이 어긋난다(실측 최대 103ms).
+
+    구간을 탐욕적으로 넓히면서, 그 구간을 시간 보존 단일 템포로 바꿔도
+    구간 안 모든 원본 템포가 tol 안에 들어오면 계속 합친다.
+    tol 기본값 10%: 그보다 작은 변화는 토끼/달팽이로 인지되지 않는다
+    (얼불춤 속도 타일은 보통 1.2배 이상). tol <= 0 이면 원본을 그대로 둔다.
+
+    반환: (정리된 entries, 원본 템포맵 대비 최대 드리프트 초)
+    """
+    entries = sorted(entries)
+    if tol <= 0.0 or len(entries) <= 1:
+        return list(entries), 0.0
+
+    out = []
+    i, n = 0, len(entries)
+    while i < n:
+        j, fit = i + 1, entries[i][1]
+        while j < n:
+            cand = _fit_bpm(entries, i, j + 1, end_beat)
+            if all(abs(entries[k][1] / cand - 1.0) <= tol for k in range(i, j + 1)):
+                fit, j = cand, j + 1
+            else:
+                break
+        out.append((entries[i][0], fit))
+        i = j
+
+    before, after = TempoMap(entries), TempoMap(out)
+    edges = sorted({e[0] for e in entries} | {e[0] for e in out} | {end_beat})
+    drift = max(abs(before.sec_at(b) - after.sec_at(b)) for b in edges)
+    return out, drift
+
+
 # ---------------------------------------------------------------- 라이터 (픽스처용)
 def _varint(v):
     out = [v & 0x7F]

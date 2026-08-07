@@ -18,7 +18,7 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from midilib import parse_smf, TempoMap
+from midilib import parse_smf, TempoMap, dejitter_tempos
 
 FAIL = 0
 
@@ -92,6 +92,32 @@ def main():
     ok(abs(tm.sec_at(4.0) - 2.0) < 1e-12, "4박@120 = 2.0s")
     ok(abs(tm.sec_at(6.0) - 2.5) < 1e-12, "이후 2박@240 = +0.5s")
     ok(tm.bpm_at(3.999) == 120.0 and tm.bpm_at(4.0) == 240.0, "경계에서 새 템포")
+
+    print("템포 잡음 제거")
+    # 전사 MIDI 재현: 진짜 128bpm 상수인 곡을 20ms 격자로 재면
+    # 박 길이가 0.46/0.48 을 오가고 템포는 130.435/125 로 튄다 (Mureka 실측 값).
+    jit = [(float(b), 130.435 if b % 2 == 0 else 125.0) for b in range(64)]
+    clean, drift = dejitter_tempos(jit, 64.0)
+    ok(len(clean) == 1, "박마다 찍힌 잡음 64개 -> 1개 — %d개" % len(clean))
+    ok(abs(clean[0][1] - 127.6) < 1.0, "합쳐진 템포가 참값 부근 — %.3f" % clean[0][1])
+    ok(drift < 0.05, "전사 대비 드리프트가 작다 — %.1fms" % (drift * 1000))
+    # 시간 보존: 곡 전체 길이는 잡음 제거 전후로 같아야 한다.
+    ok(abs(TempoMap(jit).sec_at(64.0) - TempoMap(clean).sec_at(64.0)) < 1e-9,
+       "구간 총 길이 보존")
+
+    # 의도된 변경(2배)은 tol 밖이라 반드시 살아남는다.
+    real = [(0.0, 120.0), (8.0, 240.0)]
+    clean2, _ = dejitter_tempos(real, 16.0)
+    ok(clean2 == real, "2배 속도 변경은 보존 — %s" % (clean2,))
+
+    # 잡음 위에 얹힌 진짜 변경: 잡음은 합쳐지고 변경은 남는다.
+    mixed = [(float(b), (130.435 if b % 2 == 0 else 125.0)) for b in range(16)]
+    mixed += [(float(b), (260.0 if b % 2 == 0 else 250.0)) for b in range(16, 32)]
+    clean3, _ = dejitter_tempos(mixed, 32.0)
+    ok(len(clean3) == 2, "잡음 32개 -> 구간 2개 — %d개" % len(clean3))
+    ok(clean3[1][0] == 16.0, "경계가 진짜 변경 지점 — %.4g박" % clean3[1][0])
+
+    ok(dejitter_tempos(jit, 64.0, tol=0.0)[0] == jit, "tol=0 이면 원본 그대로")
 
     print("PASS" if FAIL == 0 else "FAILED %d" % FAIL)
     sys.exit(FAIL)

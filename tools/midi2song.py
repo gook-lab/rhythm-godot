@@ -17,7 +17,9 @@ MIDI -> 곡(wav) + 채보(.tres). AI 음악 경로의 본선.
   2. 타일 간격 (0, 2] 박 -> 2박 걸음으로 채움 타일 삽입(로그)
   3. 코드(동시 노트) -> 온셋 1개로
   4. MIDI 템포 변경 = 토끼/달팽이 타일. 단 게임은 '홉당 상수 배속'이라
-     변경 지점에 타일이 반드시 있어야 한다 -> 없으면 강제 삽입
+     변경 지점에 타일이 반드시 있어야 한다 -> 없으면 강제 삽입.
+     단, 전사(오디오→MIDI) MIDI 는 박마다 템포를 찍으므로 그 전에
+     측정 잡음을 걷어낸다 -> midilib.dejitter_tempos (--tempo-tol)
   5. 첫 온셋 앞에 카운트인 4박 확보 -> 부족하면 전체를 시프트(오디오도 같이)
 
 검증 2단:
@@ -34,7 +36,7 @@ import sys
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "tools"))
 
-from midilib import parse_smf, TempoMap
+from midilib import parse_smf, TempoMap, dejitter_tempos
 from make_song import square, triangle, midi_hz, noise, normalize
 from make_click import write_wav
 import make_charts
@@ -182,6 +184,9 @@ def main():
     ap.add_argument("--melody-track", type=int, default=None)
     ap.add_argument("--no-fill", action="store_true",
                     help="2박 초과 공백을 채우지 않고 에러로 처리")
+    ap.add_argument("--tempo-tol", type=float, default=0.10,
+                    help="이 비율 안쪽의 템포 변화는 측정 잡음으로 보고 합친다 "
+                         "(전사 MIDI 대응, 0 이면 원본 템포맵 그대로)")
     args = ap.parse_args()
 
     name = args.name or os.path.splitext(os.path.basename(args.midi))[0]
@@ -204,10 +209,25 @@ def main():
     if len(onsets) < len(raw):
         print("  코드 합침: 노트 %d -> 온셋 %d" % (len(raw), len(onsets)))
 
+    # ── 템포 잡음 제거 (전사 MIDI 대응) ─────────────────────────
+    # 오디오→MIDI 전사기(Mureka 스템 등)는 박마다 템포를 찍는다. 그대로 두면
+    # 변경마다 속도 타일이 박히고, 홉 중간 변경은 게임 모델로 표현조차 안 된다.
+    src_end_beat = max((n.tick + n.dur) / ppq
+                       for tr in data["tracks"] for n in tr["notes"])
+    tempos_raw = [(t / ppq, bpm) for t, bpm in data["tempos"]]
+    # 전사 MIDI 는 노트가 끝난 뒤에도 템포를 계속 찍는다 — 구간 적분이
+    # 마지막 이벤트를 넘어서도록 끝박을 넉넉히 잡는다.
+    tempos_clean, drift_s = dejitter_tempos(
+        tempos_raw, max(src_end_beat, tempos_raw[-1][0] + 1.0), args.tempo_tol)
+    if len(tempos_clean) < len(tempos_raw):
+        print("  템포 정리: 이벤트 %d개 -> %d개 (측정 잡음 · 전사 대비 최대 %.1fms)"
+              % (len(tempos_raw), len(tempos_clean), drift_s * 1000.0))
+        print("     오디오도 같은 템포맵으로 렌더하므로 채보-오디오 오차는 0이다.")
+
     # ── 카운트인 시프트 (오디오·템포·온셋을 전부 같이 민다) ─────
     shift = max(0.0, LEAD_BEATS - onsets[0])
-    tempos = [(0.0, data["tempos"][0][1])] + [
-        (t / ppq + shift, bpm) for t, bpm in data["tempos"] if t > 0]
+    tempos = [(0.0, tempos_clean[0][1])] + [
+        (b + shift, bpm) for b, bpm in tempos_clean if b > 0]
     if shift > 0:
         onsets = [q12(o + shift) for o in onsets]
         print("  카운트인: 전체 +%.4g박 시프트 (첫 온셋 %.4g박)" % (shift, onsets[0]))
