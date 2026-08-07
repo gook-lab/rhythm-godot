@@ -69,6 +69,7 @@ const COUNTDOWN_BEATS := 4
 @onready var _health: ProgressBar = $UI/HealthBar
 @onready var _pause_panel: PanelContainer = $UI/PausePanel
 @onready var _hitsound: AudioStreamPlayer = $HitSound
+@onready var _misssound: AudioStreamPlayer = $MissSound
 
 var _hit_times := PackedFloat32Array()
 var _positions := PackedVector2Array()
@@ -375,6 +376,9 @@ func _on_judged(v: Judge.Verdict, delta_ms: float, tile: int) -> void:
 		Judge.Verdict.VERY_EARLY, Judge.Verdict.VERY_LATE:
 			_planets.flash(vc)
 		_:
+			# 놓친 타일의 소리. 감시자 미스는 키 입력이 없어서 히트사운드가
+			# 안 난다 — 이게 없으면 미스가 화면으로만 오고 귀로는 안 온다.
+			_misssound.play()
 			_planets.flash(vc)
 			# 콤보가 실제로 끊길 때만 흔든다. 이미 끊긴 상태에서 계속 미스하는 건
 			# 잃을 게 없으므로 흔들 이유도 없다. (on_judged 가 먼저 불려서
