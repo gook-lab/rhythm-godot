@@ -34,6 +34,15 @@ var _log: Array[String] = []
 var _echo_sent := false
 var _t0 := 0
 
+## 일시정지 검증 상태. idx==4 에 도달하면 ESC 로 멈추고 90프레임 뒤 재개한다.
+## 90프레임(~0.6초)은 미스 창(±110ms)을 한참 넘는다 — 일시정지가 클럭을 못 얼리면
+## 감시자가 그 사이 미스를 쏟아내므로 여기서 반드시 걸린다.
+var _pause_state := 0      # 0 대기 · 1 정지 중 · 2 완료
+var _pause_frames := 0
+var _pause_idx := 0
+var _pause_total := 0
+var _pause_clk := 0.0
+
 
 func _ready() -> void:
 	AudioServer.set_bus_mute(0, true)   # 테스트가 스피커로 나가면 안 된다
@@ -76,6 +85,30 @@ func _process(_d: float) -> void:
 
 	if _phase == "play":
 		var idx: int = _main.get("_idx")
+
+		# ── 일시정지 검증 ──
+		if _pause_state == 0 and idx == 4:
+			_pause_state = 1
+			_pause_idx = idx
+			_pause_total = int(_main.get_node("Score").total)
+			_pause_clk = float(AudioClock.judged_ms())
+			_press(KEY_ESCAPE)
+			return
+		if _pause_state == 1:
+			_pause_frames += 1
+			if _pause_frames < 90:
+				return
+			var drift := absf(float(AudioClock.judged_ms()) - _pause_clk)
+			_expect(int(_main.get("_idx")) == _pause_idx,
+				"일시정지 중 타일 정지 (%s)" % _main.get("_idx"))
+			_expect(int(_main.get_node("Score").total) == _pause_total,
+				"일시정지 중 판정 없음 (%d)" % _main.get_node("Score").total)
+			_expect(bool(_main.get("_paused")), "일시정지 상태 플래그")
+			_expect(drift < 15.0,
+				"일시정지 중 클럭 동결 (드리프트 %.1fms — 믹스 청크 이내)" % drift)
+			_pause_state = 2
+			_press(KEY_ESCAPE)   # 재개
+			return
 		if idx >= _hit.size():
 			_check_play()
 			return
@@ -84,7 +117,8 @@ func _process(_d: float) -> void:
 			var off: float = OFFSETS[k]
 			if off < 900.0 and float(AudioClock.judged_ms()) >= _hit[idx] + off:
 				_pressed[idx] = true
-				_press(KEY_SPACE)
+				# 타일 2 는 F 키 — 얼불춤처럼 거의 모든 키가 판정키여야 한다(양손 교타)
+				_press(KEY_F if idx == 2 else KEY_SPACE)
 				# 2) 키 리피트: 같은 프레임에 echo 를 세 번 더 보낸다.
 				#    걸러지지 않으면 idx 가 폭주한다.
 				if not _echo_sent:
@@ -148,6 +182,7 @@ func _check_play() -> void:
 	_expect(score.deltas.size() == before_samples and before_samples > 0,
 		"R 재시작: 산포 표본은 남는다 (%d)" % score.deltas.size())
 	_expect(int(AudioClock.clamp_hits) == 0, "R 재시작: 클럭 카운터 리셋")
+	_expect(_pause_state == 2, "일시정지 검증이 실제로 수행됨")
 
 	_finish("")
 

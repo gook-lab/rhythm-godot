@@ -67,6 +67,8 @@ const COUNTDOWN_BEATS := 4
 @onready var _r_acc: Label = $UI/ResultPanel/Margin/VBox/Accuracy
 @onready var _r_break: Label = $UI/ResultPanel/Margin/VBox/Breakdown
 @onready var _health: ProgressBar = $UI/HealthBar
+@onready var _pause_panel: PanelContainer = $UI/PausePanel
+@onready var _hitsound: AudioStreamPlayer = $HitSound
 
 var _hit_times := PackedFloat32Array()
 var _positions := PackedVector2Array()
@@ -100,6 +102,11 @@ var _last_u := 0.0
 
 
 func _ready() -> void:
+	# 곡 선택 화면이 고른 차트가 있으면 그걸 쓴다. 없으면(테스트·직접 실행) 인스펙터 값.
+	if GameState.selected_chart != "":
+		var c: Chart = load(GameState.selected_chart)
+		if c != null:
+			chart = c
 	if chart == null or not chart.is_valid():
 		push_error("Main.chart 가 비었거나 불완전하다. 인스펙터에서 .tres 를 물려라.")
 		set_process(false)
@@ -121,7 +128,16 @@ func _ready() -> void:
 	_restart()
 
 
+func _toggle_pause() -> void:
+	_paused = not _paused
+	AudioClock.set_paused(_paused)
+	_pause_panel.visible = _paused
+
+
 func _restart() -> void:
+	_paused = false
+	AudioClock.set_paused(false)
+	_pause_panel.visible = false
 	_idx = 1
 	_vis = 1
 	_finished = false
@@ -193,7 +209,7 @@ func _process(delta: float) -> void:
 		_shake_t += delta
 		_shake = maxf(0.0, _shake - delta * SHAKE_DECAY)
 
-	if _finished or not AudioClock.is_warm():
+	if _paused or _finished or not AudioClock.is_warm():
 		return
 	var t := AudioClock.judged_ms()
 
@@ -283,11 +299,24 @@ func _input(event: InputEvent) -> void:
 	# 크래시가 아니라 조용히 틀리는 종류라 가장 찾기 어렵다.
 	if not k.pressed or k.echo:
 		return
+	if k.keycode == KEY_ESCAPE:
+		if _finished:
+			get_tree().change_scene_to_file("res://scenes/SongSelect.tscn")
+		else:
+			_toggle_pause()
+		return
 	if k.keycode == KEY_R:
 		_restart()
 		return
-	if _finished or k.keycode != KEY_SPACE:
+	if _paused or _finished:
 		return
+	# 얼불춤처럼 거의 모든 키를 판정키로 받는다 — 양손 교타가 가능해야
+	# 빠른 구간에서 손맛이 산다. 예약키(R/ESC)와 수식키만 뺀다.
+	if k.keycode in [KEY_SHIFT, KEY_CTRL, KEY_ALT, KEY_META, KEY_CAPSLOCK, KEY_TAB]:
+		return
+	# 입력 즉시 히트사운드 — 판정보다 빠른 피드백. 곡의 클릭과 내 입력음의
+	# 어긋남이 곧 내 오차라서, 이게 손맛 캘리브레이션의 핵심 도구다.
+	_hitsound.play()
 	# 워밍업 중 입력을 여기서 막는다. 안 막으면 곡 맨 앞 입력이
 	# 이유 없이 Miss 로 기록되어 산포 표본을 오염시킨다.
 	if not AudioClock.is_warm():
@@ -315,6 +344,7 @@ func _advance() -> void:
 
 var _prev_combo := 0
 var _go_until := 0.0
+var _paused := false
 
 
 static func _verdict_color(v: Judge.Verdict) -> Color:

@@ -1,4 +1,4 @@
-[gd_scene load_steps=10 format=3]
+[gd_scene load_steps=11 format=3]
 
 [ext_resource type="Script" path="res://scripts/Main.gd" id="1_main"]
 [ext_resource type="Script" path="res://scripts/PlanetPair.gd" id="2_pair"]
@@ -8,6 +8,7 @@
 [ext_resource type="Script" path="res://scripts/TimingBar.gd" id="6_bar"]
 [ext_resource type="Script" path="res://scripts/TilePath.gd" id="9_tile"]
 [ext_resource type="Resource" path="res://charts/song140.tres" id="7_chart"]
+[ext_resource type="AudioStream" path="res://assets/hit.wav" id="10_hit"]
 
 [sub_resource type="Environment" id="Env_1"]
 background_mode = 3
@@ -49,6 +50,11 @@ color = Color(0.4, 0.9, 1.45, 1)
 offset_right = 300.0
 offset_bottom = 70.0
 theme_override_font_sizes/font_size = 26
+
+[node name="HitSound" type="AudioStreamPlayer" parent="."]
+stream = ExtResource("10_hit")
+volume_db = -8.0
+max_polyphony = 4
 
 [node name="Judge" type="Node" parent="."]
 script = ExtResource("4_judge")
@@ -154,7 +160,33 @@ text = ""
 [node name="Footer" type="Label" parent="UI/ResultPanel/Margin/VBox"]
 theme_override_font_sizes/font_size = 15
 horizontal_alignment = 1
-text = "R 로 다시"
+text = "R 다시 · ESC 곡 선택"
+
+[node name="PausePanel" type="PanelContainer" parent="UI"]
+visible = false
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -190.0
+offset_top = -70.0
+offset_right = 190.0
+offset_bottom = 70.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="VBox" type="VBoxContainer" parent="UI/PausePanel"]
+theme_override_constants/separation = 8
+
+[node name="T" type="Label" parent="UI/PausePanel/VBox"]
+theme_override_font_sizes/font_size = 34
+horizontal_alignment = 1
+text = "일시정지"
+
+[node name="H" type="Label" parent="UI/PausePanel/VBox"]
+theme_override_font_sizes/font_size = 15
+horizontal_alignment = 1
+text = "ESC 재개 · R 재시작"
 
 [node name="HUD" type="VBoxContainer" parent="UI"]
 anchor_left = 1.0

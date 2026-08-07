@@ -73,6 +73,7 @@ func start(stream: AudioStream) -> void:
 		push_error("AudioClock.start() called with null stream")
 		return
 	_player.stop()
+	_player.stream_paused = false   # 일시정지 중 재시작해도 깨끗하게
 	_player.stream = stream
 	_last_ms = -INF
 	clamp_hits = 0
@@ -84,6 +85,14 @@ func start(stream: AudioStream) -> void:
 
 func stop() -> void:
 	_player.stop()
+
+
+## 일시정지. stream_paused 는 get_playback_position() 을 얼린다 —
+## 언 클럭 = 시간이 안 흐름 = 감시자가 미스를 안 낸다.
+## 별도의 '일시정지 시각 저장/복원'이 필요 없는 이유다.
+## (멈춘 동안 since_mix 가 믹스 청크 안에서 진동하지만 단조 클램프가 잡는다)
+func set_paused(p: bool) -> void:
+	_player.stream_paused = p
 
 
 func is_playing() -> bool:
