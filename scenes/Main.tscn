@@ -54,12 +54,12 @@ theme_override_font_sizes/font_size = 26
 
 [node name="HitSound" type="AudioStreamPlayer" parent="."]
 stream = ExtResource("10_hit")
-volume_db = -11.0
+volume_db = -18.0
 max_polyphony = 4
 
 [node name="MissSound" type="AudioStreamPlayer" parent="."]
 stream = ExtResource("11_miss")
-volume_db = -10.0
+volume_db = -16.0
 max_polyphony = 2
 
 [node name="Judge" type="Node" parent="."]
