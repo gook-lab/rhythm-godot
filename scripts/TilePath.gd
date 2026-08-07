@@ -21,13 +21,18 @@ extends Node2D
 ##
 ## 색 성분이 1.0 을 넘으면 HDR 이라 WorldEnvironment 의 글로우가 걸린다.
 ## 테두리만 1.0 을 넘겨서 선이 발광하고 안은 가라앉게 만든다.
-const FILL_PASSED := Color(0.30, 0.36, 0.55, 0.10)
-const FILL_UPCOMING := Color(0.55, 0.68, 0.95, 0.14)
-const FILL_TARGET := Color(0.95, 0.92, 0.60, 0.22)
+## 이전 팔레트(색조·채도)를 그대로 두고 밝기만 낮췄다.
+## 채도까지 죽였더니 차분해지긴 했는데 심심해졌다 — 문제는 채도가 아니라 밝기였다.
+##
+## 기준: 색 성분이 1.0 을 넘으면 WorldEnvironment 글로우가 걸린다.
+## 앞으로 올 타일도 살짝 넘겨서 경로가 은은히 빛나되, 목표 타일이 확실히 더 밝게.
+const FILL_PASSED := Color(0.30, 0.36, 0.55, 0.09)
+const FILL_UPCOMING := Color(0.55, 0.68, 0.95, 0.12)
+const FILL_TARGET := Color(0.95, 0.92, 0.60, 0.19)
 
-const EDGE_PASSED := Color(0.35, 0.42, 0.62, 0.55)
-const EDGE_UPCOMING := Color(1.15, 1.35, 1.90)     # HDR -> 블룸
-const EDGE_TARGET := Color(2.20, 2.00, 1.10)       # 목표는 더 세게
+const EDGE_PASSED := Color(0.30, 0.36, 0.53, 0.5)
+const EDGE_UPCOMING := Color(0.86, 1.01, 1.42)     # 1.90 -> 1.42
+const EDGE_TARGET := Color(1.65, 1.50, 0.82)       # 2.20 -> 1.65
 
 var _positions: PackedVector2Array
 var _angles: PackedFloat32Array
@@ -40,6 +45,14 @@ var _last_cursor := -1
 const IMPACT_SEC := 0.22
 const IMPACT_SCALE := 0.34      # 최대로 커지는 비율
 var _impacts := {}
+
+## 지나간 타일이 떨어져 나간다 (원작의 trackDisappearAnimation).
+## tile -> [경과초, 초기속도, 각속도(도/초)]
+## 난수는 시작할 때 한 번만 뽑아 저장한다 — 매 프레임 뽑으면 타일이 부들거린다.
+const FALL_SEC := 1.15
+const FALL_GRAVITY := 420.0
+var _falls := {}
+var _rng := RandomNumberGenerator.new()
 
 
 func setup(positions: PackedVector2Array, angles: PackedFloat32Array, side: float) -> void:
@@ -55,9 +68,24 @@ func setup(positions: PackedVector2Array, angles: PackedFloat32Array, side: floa
 func set_cursor(i: int) -> void:
 	if i == _last_cursor:
 		return
+	# 새로 지나간 타일들을 떨어뜨린다. 한 프레임에 여러 칸 전진할 수도 있다.
+	if _last_cursor >= 0:
+		for t in range(_last_cursor, mini(i, _positions.size())):
+			_start_fall(t)
 	_last_cursor = i
 	_cursor = i
+	set_process(true)
 	queue_redraw()
+
+
+func _start_fall(tile: int) -> void:
+	if tile < 0 or tile >= _positions.size() or _falls.has(tile):
+		return
+	_falls[tile] = [
+		0.0,
+		Vector2(_rng.randf_range(-42.0, 42.0), _rng.randf_range(-120.0, -40.0)),
+		_rng.randf_range(-160.0, 160.0),
+	]
 
 
 ## 타일을 밟았을 때. 판정 색으로 잠깐 부풀었다 가라앉는다.
@@ -71,11 +99,13 @@ func impact(tile: int, col: Color) -> void:
 
 func clear_impacts() -> void:
 	_impacts.clear()
+	_falls.clear()
+	_last_cursor = -1
 	queue_redraw()
 
 
 func _process(delta: float) -> void:
-	if _impacts.is_empty():
+	if _impacts.is_empty() and _falls.is_empty():
 		set_process(false)
 		return
 	var done: Array = []
@@ -86,6 +116,16 @@ func _process(delta: float) -> void:
 			done.append(t)
 	for t in done:
 		_impacts.erase(t)
+
+	done = []
+	for t in _falls:
+		var f: Array = _falls[t]
+		f[0] += delta
+		if f[0] >= FALL_SEC:
+			done.append(t)
+	for t in done:
+		_falls.erase(t)   # 다 떨어진 타일은 더 이상 그리지 않는다
+
 	queue_redraw()
 
 
@@ -106,9 +146,9 @@ func _draw() -> void:
 	var half := _side * 0.5
 
 	# 지나간 타일 -> 앞으로 올 타일 순으로 그려서, 겹치는 부분은 나중 것이 위에 온다.
-	for i in range(n):
-		if i < _cursor:
-			_draw_tile(i, half, FILL_PASSED, EDGE_PASSED, 1.5)
+	# 떨어지는 중인 타일만 그리고, 다 떨어진 것은 아예 안 그린다.
+	for t in _falls:
+		_draw_falling(t, half)
 	for i in range(n - 1, _cursor, -1):
 		_draw_tile(i, half, FILL_UPCOMING, EDGE_UPCOMING, 2.0)
 	# 목표 타일은 맨 위에, 테두리를 더 굵게
@@ -124,14 +164,31 @@ func _draw() -> void:
 		var grow := half * (1.0 + IMPACT_SCALE * (1.0 - k))
 		var deg := _angles[t] if t < _angles.size() else 0.0
 		var q := _quad(_positions[t], deg, grow)
-		draw_colored_polygon(q, Color(col.r, col.g, col.b, 0.30 * k))
+		draw_colored_polygon(q, Color(col.r, col.g, col.b, 0.26 * k))
 		var outline := q.duplicate()
 		outline.append(q[0])
-		draw_polyline(outline, Color(col.r * 1.6, col.g * 1.6, col.b * 1.6, k), 3.5, true)
+		draw_polyline(outline, Color(col.r * 1.25, col.g * 1.25, col.b * 1.25, k), 3.2, true)
 		# 방사 플레어. 원작에서 밟은 자리에 빛이 터지는 그 느낌.
 		var flare := half * (0.5 + 1.6 * (1.0 - k))
 		draw_circle(_positions[t], flare,
-			Color(col.r, col.g, col.b, 0.22 * k * k))
+			Color(col.r, col.g, col.b, 0.18 * k * k))
+
+
+## 지나간 타일이 중력에 떨어지며 회전하고 사라진다.
+func _draw_falling(t: int, half: float) -> void:
+	var f: Array = _falls[t]
+	var e: float = f[0]
+	var k: float = clampf(1.0 - e / FALL_SEC, 0.0, 1.0)   # 1 -> 0
+	var vel: Vector2 = f[1]
+	var pos: Vector2 = _positions[t] + vel * e + Vector2(0, 0.5 * FALL_GRAVITY * e * e)
+	var deg: float = (_angles[t] if t < _angles.size() else 0.0) + f[2] * e
+	var q := _quad(pos, deg, half * (0.55 + 0.45 * k))
+	draw_colored_polygon(q, Color(FILL_PASSED.r, FILL_PASSED.g, FILL_PASSED.b,
+		FILL_PASSED.a * k * 2.2))
+	var outline := q.duplicate()
+	outline.append(q[0])
+	draw_polyline(outline, Color(EDGE_PASSED.r, EDGE_PASSED.g, EDGE_PASSED.b,
+		EDGE_PASSED.a * k), 1.5, true)
 
 
 func _draw_tile(i: int, half: float, fill: Color, edge: Color, edge_w: float) -> void:

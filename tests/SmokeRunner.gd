@@ -190,8 +190,18 @@ func _finish(reached_end: bool, wall: float) -> void:
 		if score.count_of(Judge.Verdict.TOO_LATE) > 0:
 			print("  FAIL 자동플레이인데 미스가 %d 건"
 				% score.count_of(Judge.Verdict.TOO_LATE)); fails += 1
-	if score.total < n:
-		print("  FAIL 판정 수(%d)가 타일 수(%d)보다 적다" % [score.total, n]); fails += 1
+	# 무입력이면 정확도 실패 조건에 걸려서 일찍 끝나는 게 '정상'이다.
+	# 자동플레이(미스 없음)일 때만 완주를 요구한다.
+	var grace: int = int(_main.get("fail_grace_judgments"))
+	if autoplay and miss_every == 0:
+		if score.total < n:
+			print("  FAIL 자동플레이인데 판정 %d < 타일 %d" % [score.total, n]); fails += 1
+	else:
+		if score.total < grace:
+			print("  FAIL 유예(%d) 전에 끝났다 (판정 %d)" % [grace, score.total]); fails += 1
+		if not autoplay and score.total > grace + 3:
+			print("  FAIL 무입력인데 실패 조건이 안 걸렸다 (판정 %d, 유예 %d)"
+				% [score.total, grace]); fails += 1
 	# 역행은 구조적으로 일어난다. 횟수가 아니라 크기로 본다.
 	# 한 청크(~6ms)를 크게 넘으면 그건 다른 문제다.
 	# 카메라 경로가 불연속이면 프레임당 이동량이 중앙값 대비 크게 튄다.

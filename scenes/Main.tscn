@@ -13,11 +13,11 @@
 [sub_resource type="Environment" id="Env_1"]
 background_mode = 3
 glow_enabled = true
-glow_intensity = 1.6
-glow_strength = 1.25
-glow_bloom = 0.45
+glow_intensity = 1.15
+glow_strength = 1.1
+glow_bloom = 0.30
 glow_blend_mode = 1
-glow_hdr_threshold = 0.75
+glow_hdr_threshold = 0.85
 
 [node name="Main" type="Node2D"]
 script = ExtResource("1_main")
@@ -61,6 +61,91 @@ script = ExtResource("4_judge")
 script = ExtResource("5_score")
 
 [node name="UI" type="CanvasLayer" parent="."]
+
+[node name="ComboBox" type="VBoxContainer" parent="UI"]
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = -220.0
+offset_top = 18.0
+offset_right = 220.0
+offset_bottom = 150.0
+grow_horizontal = 2
+theme_override_constants/separation = -10
+mouse_filter = 2
+
+[node name="VerdictLabel" type="Label" parent="UI/ComboBox"]
+theme_override_font_sizes/font_size = 30
+horizontal_alignment = 1
+text = ""
+
+[node name="ComboLabel" type="Label" parent="UI/ComboBox"]
+theme_override_font_sizes/font_size = 76
+horizontal_alignment = 1
+text = ""
+
+[node name="CountdownLabel" type="Label" parent="UI"]
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -200.0
+offset_top = -90.0
+offset_right = 200.0
+offset_bottom = 90.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/font_size = 130
+horizontal_alignment = 1
+vertical_alignment = 1
+text = ""
+mouse_filter = 2
+
+[node name="ResultPanel" type="PanelContainer" parent="UI"]
+visible = false
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -280.0
+offset_top = -220.0
+offset_right = 280.0
+offset_bottom = 220.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Margin" type="MarginContainer" parent="UI/ResultPanel"]
+theme_override_constants/margin_left = 28
+theme_override_constants/margin_top = 20
+theme_override_constants/margin_right = 28
+theme_override_constants/margin_bottom = 20
+
+[node name="VBox" type="VBoxContainer" parent="UI/ResultPanel/Margin"]
+theme_override_constants/separation = 6
+
+[node name="Headline" type="Label" parent="UI/ResultPanel/Margin/VBox"]
+theme_override_font_sizes/font_size = 26
+horizontal_alignment = 1
+text = ""
+
+[node name="Rank" type="Label" parent="UI/ResultPanel/Margin/VBox"]
+theme_override_font_sizes/font_size = 96
+horizontal_alignment = 1
+text = ""
+
+[node name="Accuracy" type="Label" parent="UI/ResultPanel/Margin/VBox"]
+theme_override_font_sizes/font_size = 34
+horizontal_alignment = 1
+text = ""
+
+[node name="Breakdown" type="Label" parent="UI/ResultPanel/Margin/VBox"]
+theme_override_font_sizes/font_size = 16
+horizontal_alignment = 1
+text = ""
+
+[node name="Footer" type="Label" parent="UI/ResultPanel/Margin/VBox"]
+theme_override_font_sizes/font_size = 15
+horizontal_alignment = 1
+text = "R 로 다시"
 
 [node name="HUD" type="VBoxContainer" parent="UI"]
 anchor_left = 1.0

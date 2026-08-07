@@ -35,6 +35,15 @@ const SHAKE_DECAY := 60.0
 const SHAKE_HZ := 22.0
 const SHAKE_MIN_COMBO := 3
 
+## 정확도가 이 아래로 떨어지면 실패로 끝낸다.
+## 초반 한두 번 미스로 끝나면 가혹하므로 유예 판정 수를 둔다 —
+## 판정이 적을 때는 한 번만 놓쳐도 정확도가 크게 흔들린다.
+@export var fail_below_accuracy: float = 55.0
+@export var fail_grace_judgments: int = 12
+
+## 시작 카운트다운을 보여줄 박자 수. 인트로가 16박이라 전부 세면 지루하다.
+const COUNTDOWN_BEATS := 4
+
 @export var chart: Chart
 
 @onready var _path: TilePath = $World/Path
@@ -51,6 +60,14 @@ const SHAKE_MIN_COMBO := 3
 @onready var _hud_info: Label = $UI/HUD/InfoLabel
 @onready var _timing_bar: TimingBar = $UI/TimingPanel/VBox/Bar
 @onready var _timing_label: Label = $UI/TimingPanel/VBox/TimingLabel
+@onready var _verdict_label: Label = $UI/ComboBox/VerdictLabel
+@onready var _combo_label: Label = $UI/ComboBox/ComboLabel
+@onready var _countdown: Label = $UI/CountdownLabel
+@onready var _result: PanelContainer = $UI/ResultPanel
+@onready var _r_headline: Label = $UI/ResultPanel/Margin/VBox/Headline
+@onready var _r_rank: Label = $UI/ResultPanel/Margin/VBox/Rank
+@onready var _r_acc: Label = $UI/ResultPanel/Margin/VBox/Accuracy
+@onready var _r_break: Label = $UI/ResultPanel/Margin/VBox/Breakdown
 
 var _hit_times := PackedFloat32Array()
 var _positions := PackedVector2Array()
@@ -117,6 +134,10 @@ func _restart() -> void:
 	_score.reset()   # 표본(deltas)은 남긴다 — 산포 측정이 세션 단위다
 	_planets.clear_trails()
 	_path.clear_impacts()
+	_result.visible = false
+	_countdown.text = ""
+	_verdict_label.text = ""
+	_combo_label.text = ""
 	_configure_orbit(1)
 	_apply_windows(1)
 	_planets.set_orbit_progress(0.0)
@@ -190,6 +211,11 @@ func _process(delta: float) -> void:
 		_vis += 1
 		_planets.swap_roles()
 		_configure_orbit(_vis)
+
+	# 정확도 실패. 유예 판정 수를 넘긴 뒤부터 본다.
+	if _score.total >= fail_grace_judgments and _score.accuracy() < fail_below_accuracy:
+		_on_song_finished(true)
+		return
 
 	if _idx >= _hit_times.size():
 		_on_song_finished()
@@ -291,14 +317,15 @@ func _advance() -> void:
 
 
 var _prev_combo := 0
+var _go_until := 0.0
 
 
 static func _verdict_color(v: Judge.Verdict) -> Color:
 	match v:
-		Judge.Verdict.PERFECT: return Color(0.55, 1.35, 0.80)
-		Judge.Verdict.EARLY_PERFECT, Judge.Verdict.LATE_PERFECT: return Color(0.85, 1.25, 0.55)
-		Judge.Verdict.VERY_EARLY, Judge.Verdict.VERY_LATE: return Color(1.30, 1.05, 0.45)
-		_: return Color(1.35, 0.40, 0.40)
+		Judge.Verdict.PERFECT: return Color(0.50, 1.20, 0.72)
+		Judge.Verdict.EARLY_PERFECT, Judge.Verdict.LATE_PERFECT: return Color(0.78, 1.12, 0.52)
+		Judge.Verdict.VERY_EARLY, Judge.Verdict.VERY_LATE: return Color(1.15, 0.95, 0.44)
+		_: return Color(1.20, 0.39, 0.39)
 
 
 func _on_judged(v: Judge.Verdict, delta_ms: float, tile: int) -> void:
@@ -330,16 +357,55 @@ func _on_judged(v: Judge.Verdict, delta_ms: float, tile: int) -> void:
 				_shake_t = 0.0
 
 
-func _on_song_finished() -> void:
+func _on_song_finished(failed := false) -> void:
 	if _finished:
 		return
 	_finished = true
 	AudioClock.stop()
+	_countdown.text = ""
+	_popup.text = ""
 	var s := _score.delta_stats()
-	_popup.text = "FINISHED  %s  %.2f%%\nR 로 재시작" % [_score.rank(), _score.accuracy()]
-	print("[결과] %s | 표본 %d | 평균 %+.1fms | 표준편차 %.1fms | 역행 %d회 최대 %.3fms"
-		% [_score.summary_line(), s.n, s.mean, s.sd,
+
+	var acc := _score.accuracy()
+	var rank := "F" if failed else _score.rank()
+	_r_rank.text = rank
+	_r_acc.text = "정확도 %.2f%%" % acc
+	if failed:
+		_r_headline.text = "실패 — 정확도 %.0f%% 아래" % fail_below_accuracy
+		_r_headline.modulate = Color(1.2, 0.45, 0.45)
+		_r_rank.modulate = Color(1.2, 0.45, 0.45)
+	else:
+		_r_headline.text = _headline_for(acc)
+		_r_headline.modulate = Color(1.0, 0.95, 0.7)
+		_r_rank.modulate = Color(1.15, 1.05, 0.7)
+	_r_break.text = (
+		"너무 빠름 %d    빠름 %d    빠름! %d\n" % [
+			_score.count_of(Judge.Verdict.TOO_EARLY),
+			_score.count_of(Judge.Verdict.VERY_EARLY),
+			_score.count_of(Judge.Verdict.EARLY_PERFECT)]
+		+ "정확 %d\n" % _score.count_of(Judge.Verdict.PERFECT)
+		+ "느림! %d    느림 %d    너무 느림 %d\n\n" % [
+			_score.count_of(Judge.Verdict.LATE_PERFECT),
+			_score.count_of(Judge.Verdict.VERY_LATE),
+			_score.count_of(Judge.Verdict.TOO_LATE)]
+		+ "최대 콤보 %d    ·    타일 %d / %d\n" % [
+			_score.max_combo, _score.total, _hit_times.size() - 1]
+		+ "판정 오차 평균 %+.1fms   표준편차 %.1fms" % [s.mean, s.sd]
+	)
+	_result.visible = true
+
+	print("[결과] %s%s | 표본 %d | 평균 %+.1fms | 표준편차 %.1fms | 역행 %d회 최대 %.3fms"
+		% ["실패 " if failed else "", _score.summary_line(), s.n, s.mean, s.sd,
 		   AudioClock.clamp_hits, AudioClock.max_backstep_ms])
+
+
+static func _headline_for(acc: float) -> String:
+	if acc >= 100.0: return "완벽한 플레이!"
+	if acc >= 99.0: return "거의 완벽!"
+	if acc >= 95.0: return "훌륭한 클리어"
+	if acc >= 90.0: return "클리어"
+	if acc >= 70.0: return "완주"
+	return "완주 — 다시 해보자"
 
 
 func _on_offset_changed(v: float) -> void:
@@ -350,6 +416,25 @@ func _on_offset_changed(v: float) -> void:
 # ------------------------------------------------------------------ HUD
 func _update_hud(t: float) -> void:
 	_hud_score.text = _score.summary_line()
+	_combo_label.text = str(_score.combo) if _score.combo > 0 else ""
+	if _score.combo == 0:
+		_verdict_label.text = ""
+
+	# 시작 카운트다운 — 첫 타일까지 남은 박자
+	if _hit_times.size() > 1 and t < _hit_times[1]:
+		var spb := 60000.0 / chart.bpm
+		var left := (_hit_times[1] - t) / spb
+		if left <= COUNTDOWN_BEATS:
+			_countdown.text = str(int(ceil(left)))
+			_countdown.modulate = Color(1.0, 0.95, 0.7, clampf(left - floorf(left), 0.25, 1.0))
+		else:
+			_countdown.text = ""
+	elif _countdown.text != "" and _countdown.text != "GO":
+		_countdown.text = "GO"
+		_countdown.modulate = Color(0.6, 1.2, 0.8)
+		_go_until = t + 400.0
+	elif _countdown.text == "GO" and t > _go_until:
+		_countdown.text = ""
 
 	# 체감 BPM = 타일 BPM / 현재 홉 박자.
 	# 1/6박 홉을 340bpm 으로 밟으면 체감 2040 이다. 얼불춤 오버레이가 보여주는 값이고,
