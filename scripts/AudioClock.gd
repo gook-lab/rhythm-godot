@@ -48,6 +48,12 @@ func _ready() -> void:
 	_player.finished.connect(func() -> void: song_finished.emit())
 
 
+func _exit_tree() -> void:
+	# 재생 중에 프로세스가 죽으면 AudioStreamWAV/Playback 이 leak 로 잡힌다.
+	# 기능상 무해하지만 로그에 노이즈가 남아 진짜 에러를 읽기 어려워진다.
+	_player.stop()
+
+
 ## 유일한 재생 진입점. _player.play() 를 직접 부르는 경로를 만들지 않는다.
 ## 거치지 않으면 _last_ms 리셋이 누락되어 두 번째 플레이부터 조용히 망가진다.
 func start(stream: AudioStream) -> void:
