@@ -36,6 +36,7 @@ func _init() -> void:
 	t_score()
 	t_speed_tiles()
 	t_twirl()
+	t_health()
 
 	print("\n%d passed, %d failed" % [_pass, _fail])
 	quit(_fail)
@@ -451,3 +452,57 @@ func t_twirl() -> void:
 		"twirl 이 히트타임을 바꾼다 (%.0f -> %.0f)" % [h_no[2], h_tw[2]])
 	# CCW 0.5박이 CW 에선 1.5박이 된다 (270도 상대각의 반대편)
 	eq(h_tw[2] - h_tw[1], 750.0, "CW 에서 같은 기하는 1.5박 = 750ms")
+
+
+## 체력 — 실패 조건.
+##
+## 정확도 기반 실패를 대체한 이유: 정확도는 누적이라 한 번 떨어지면 회복이 안 된다.
+## 초반에 감 잡느라 몇 개 놓치면 그걸로 끝인데 리듬게임에서 그건 가혹하다.
+func t_health() -> void:
+	print("체력 — 안 눌렀으면 안 깎인다")
+	var s := Score.new()
+	s.reset()
+	ok(is_equal_approx(s.health, Score.HEALTH_MAX), "시작 체력 만땅")
+	ok(not s.started, "아직 시작 안 함")
+	# 보고만 있는 상태: 미스가 쌓여도 체력이 안 깎여야 한다
+	for i in range(50):
+		s.on_judged(Judge.Verdict.TOO_LATE, INF, i)
+	ok(is_equal_approx(s.health, Score.HEALTH_MAX), "무입력 미스 50회 — 체력 유지")
+	ok(not s.is_dead(), "무입력으로는 안 죽는다")
+
+	print("체력 — 한 번 누르면 그때부터 깎인다")
+	s.reset()
+	s.on_judged(Judge.Verdict.PERFECT, 0.0, 0)     # 첫 입력
+	ok(s.started, "입력 후 started")
+	var h0 := s.health
+	s.on_judged(Judge.Verdict.TOO_LATE, INF, 1)
+	ok(s.health < h0, "미스로 체력 감소 (%.1f -> %.1f)" % [h0, s.health])
+	eq(h0 - s.health, Score.DMG_MISS, "감소량이 DMG_MISS")
+
+	print("체력 — 잘 치면 돌아온다")
+	s.reset()
+	s.on_judged(Judge.Verdict.PERFECT, 0.0, 0)
+	for i in range(5):
+		s.on_judged(Judge.Verdict.TOO_LATE, INF, i)
+	var low := s.health
+	ok(low < Score.HEALTH_MAX, "5미스로 떨어짐 (%.1f)" % low)
+	for i in range(20):
+		s.on_judged(Judge.Verdict.PERFECT, 0.0, i)
+	ok(s.health > low, "정확으로 회복 (%.1f -> %.1f)" % [low, s.health])
+	ok(s.health <= Score.HEALTH_MAX, "만땅을 안 넘는다 (%.1f)" % s.health)
+
+	print("체력 — 연속 미스로 죽는다")
+	s.reset()
+	s.on_judged(Judge.Verdict.PERFECT, 0.0, 0)
+	var n := 0
+	while not s.is_dead() and n < 200:
+		s.on_judged(Judge.Verdict.TOO_LATE, INF, n)
+		n += 1
+	ok(s.is_dead(), "연속 미스로 사망")
+	# 100 체력 / 7 데미지 = 15연속. 정확 1회분 회복(+1.6)을 감안해 15~16.
+	ok(n >= 14 and n <= 17, "%d 연속 미스에 사망 (14~17 기대)" % n)
+
+	print("체력 — 리셋")
+	s.reset()
+	ok(is_equal_approx(s.health, Score.HEALTH_MAX) and not s.started, "reset 이 체력·started 복구")
+	s.free()

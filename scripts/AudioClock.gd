@@ -110,6 +110,11 @@ func is_warm() -> bool:
 ##    판정 오차로 그대로 들어간다. 두 곳에서 각각 불러도 단조 클램프가 있어 모순이 없다.
 func now_ms() -> float:
 	assert(is_warm(), "now_ms() before warm — 호출자가 is_warm() 게이트를 빠뜨렸다")
+	# 정지한 뒤에는 get_playback_position() 이 0 을 돌려준다.
+	# 그대로 계산하면 클럭이 곡 길이만큼 통째로 뒤로 가고(실측 -20.9초)
+	# 역행 카운터가 오염된다. 정지 상태에서는 마지막 값을 그대로 유지한다.
+	if not _player.playing:
+		return _last_ms
 	var pos := _player.get_playback_position()               # 초
 	var since_mix := AudioServer.get_time_since_last_mix()   # 초
 	var latency := AudioServer.get_output_latency()          # 초

@@ -35,11 +35,10 @@ const SHAKE_DECAY := 60.0
 const SHAKE_HZ := 22.0
 const SHAKE_MIN_COMBO := 3
 
-## 정확도가 이 아래로 떨어지면 실패로 끝낸다.
-## 초반 한두 번 미스로 끝나면 가혹하므로 유예 판정 수를 둔다 —
-## 판정이 적을 때는 한 번만 놓쳐도 정확도가 크게 흔들린다.
-@export var fail_below_accuracy: float = 55.0
-@export var fail_grace_judgments: int = 12
+## 실패는 체력으로 판정한다(Score.health). 정확도 기반이 아니다 —
+## 정확도는 누적이라 한 번 떨어지면 회복이 안 되고, 초반 미스 몇 개로 끝나버린다.
+## 체력은 미스 -7, 정확 +1.6 이라 14연속 미스면 죽지만 잘 치면 돌아온다.
+## 그리고 플레이어가 한 번도 안 눌렀으면 아예 깎지 않는다(Score.started).
 
 ## 시작 카운트다운을 보여줄 박자 수. 인트로가 16박이라 전부 세면 지루하다.
 const COUNTDOWN_BEATS := 4
@@ -68,6 +67,7 @@ const COUNTDOWN_BEATS := 4
 @onready var _r_rank: Label = $UI/ResultPanel/Margin/VBox/Rank
 @onready var _r_acc: Label = $UI/ResultPanel/Margin/VBox/Accuracy
 @onready var _r_break: Label = $UI/ResultPanel/Margin/VBox/Breakdown
+@onready var _health: ProgressBar = $UI/HealthBar
 
 var _hit_times := PackedFloat32Array()
 var _positions := PackedVector2Array()
@@ -212,8 +212,7 @@ func _process(delta: float) -> void:
 		_planets.swap_roles()
 		_configure_orbit(_vis)
 
-	# 정확도 실패. 유예 판정 수를 넘긴 뒤부터 본다.
-	if _score.total >= fail_grace_judgments and _score.accuracy() < fail_below_accuracy:
+	if _score.is_dead():
 		_on_song_finished(true)
 		return
 
@@ -371,7 +370,7 @@ func _on_song_finished(failed := false) -> void:
 	_r_rank.text = rank
 	_r_acc.text = "정확도 %.2f%%" % acc
 	if failed:
-		_r_headline.text = "실패 — 정확도 %.0f%% 아래" % fail_below_accuracy
+		_r_headline.text = "실패 — 체력 소진"
 		_r_headline.modulate = Color(1.2, 0.45, 0.45)
 		_r_rank.modulate = Color(1.2, 0.45, 0.45)
 	else:
@@ -416,6 +415,9 @@ func _on_offset_changed(v: float) -> void:
 # ------------------------------------------------------------------ HUD
 func _update_hud(t: float) -> void:
 	_hud_score.text = _score.summary_line()
+	_health.value = _score.health
+	_health.modulate = Color(1.0, 0.45, 0.45) if _score.health < 30.0 \
+		else (Color(1.0, 0.9, 0.5) if _score.health < 60.0 else Color(0.5, 1.0, 0.7))
 	_combo_label.text = str(_score.combo) if _score.combo > 0 else ""
 	if _score.combo == 0:
 		_verdict_label.text = ""

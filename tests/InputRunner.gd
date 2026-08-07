@@ -18,7 +18,12 @@ extends Node
 ## 타일 1..9 에 대한 의도 오프셋(ms). t04_mixed 는 심판 타일이 9개다.
 ## 개수가 타일 수와 안 맞으면 남는 타일이 자동으로 미스가 되어 계수가 어긋난다.
 ## 999 = 일부러 안 누른다(감시자가 TOO_LATE 를 내야 한다).
-const OFFSETS := [0.0, 45.0, -45.0, 85.0, -85.0, 999.0, 0.0, 0.0, 0.0]
+##
+## 값은 '판정창 중앙 - 폴링 편향(~10ms)' 이다. 이 하네스는 프레임마다 폴링해서
+## 항상 +7~13ms 늦게 누른다. 처음에 +45(LATE PERFECT 창 30~60 의 중앙)를 줬더니
+## 실측 +52~58 로 상한 60 에 2~8ms 여유로 붙어서, 프레임 히치 한 번에
+## VERY_LATE 로 넘어가는 플레이크가 났다. 중앙-10 으로 두면 여유가 12ms 이상이다.
+const OFFSETS := [-10.0, 35.0, -55.0, 75.0, -95.0, 999.0, -10.0, -10.0, -10.0]
 
 var _main: Node
 var _hit: PackedFloat32Array
@@ -112,16 +117,16 @@ func _check_play() -> void:
 	# 등급이 제대로 매핑됐는가
 	_expect(score.count_of(Judge.Verdict.TOO_LATE) == 1,
 		"무입력 1건이 TOO_LATE (%d건)" % score.count_of(Judge.Verdict.TOO_LATE))
-	_expect(score.count_of(Judge.Verdict.PERFECT) >= 3,
-		"오프셋 0 세 번이 PERFECT (%d건)" % score.count_of(Judge.Verdict.PERFECT))
+	_expect(score.count_of(Judge.Verdict.PERFECT) == 4,
+		"의도 -10ms 네 번이 PERFECT (%d건)" % score.count_of(Judge.Verdict.PERFECT))
 	_expect(score.count_of(Judge.Verdict.LATE_PERFECT) == 1,
-		"+45ms -> LATE PERFECT (%d건)" % score.count_of(Judge.Verdict.LATE_PERFECT))
+		"+35ms -> LATE PERFECT (%d건)" % score.count_of(Judge.Verdict.LATE_PERFECT))
 	_expect(score.count_of(Judge.Verdict.EARLY_PERFECT) == 1,
-		"-45ms -> EARLY PERFECT (%d건)" % score.count_of(Judge.Verdict.EARLY_PERFECT))
+		"-55ms -> EARLY PERFECT (%d건)" % score.count_of(Judge.Verdict.EARLY_PERFECT))
 	_expect(score.count_of(Judge.Verdict.VERY_LATE) == 1,
-		"+85ms -> LATE! (%d건)" % score.count_of(Judge.Verdict.VERY_LATE))
+		"+75ms -> LATE! (%d건)" % score.count_of(Judge.Verdict.VERY_LATE))
 	_expect(score.count_of(Judge.Verdict.VERY_EARLY) == 1,
-		"-85ms -> EARLY! (%d건)" % score.count_of(Judge.Verdict.VERY_EARLY))
+		"-95ms -> EARLY! (%d건)" % score.count_of(Judge.Verdict.VERY_EARLY))
 
 	# 3) echo 가 걸러졌는가 — 안 걸러졌으면 판정 수가 타일 수를 넘는다
 	_expect(score.total <= _hit.size() - 1,

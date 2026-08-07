@@ -131,7 +131,8 @@ func _process(_d: float) -> void:
 	var sec := int(wall)
 	if sec != _last_sec and sec % 5 == 0 and sec > 0:
 		_last_sec = sec
-		var warm: bool = AudioClock.is_warm()
+		# 끝난 뒤에는 클럭을 읽지 않는다 — 정지 상태의 값은 의미가 없다.
+		var warm: bool = AudioClock.is_warm() and not fin
 		var clk: float = AudioClock.now_ms() if warm else -1.0
 		print("  %7d  %8.0f  %4d  %4d  %d" % [sec, clk, idx,
 			int(_main.get_node("Score").total), int(AudioClock.clamp_hits)])
@@ -153,6 +154,7 @@ func _finish(reached_end: bool, wall: float) -> void:
 		print("  랭크 %s · 정확도 %.2f%% · 최대콤보 %d · 표본 %d 평균 %+.1fms σ %.1fms"
 			% [score.rank(), score.accuracy(), score.max_combo,
 			   st2.n, st2.mean, st2.sd])
+	print("  체력 %.1f / %.0f · started %s" % [score.health, Score.HEALTH_MAX, score.started])
 	print("  클럭 역행 %d회 · 최대 %.3fms" % [int(AudioClock.clamp_hits),
 		float(AudioClock.max_backstep_ms)])
 	# 카메라 부드러움: 프레임당 이동량의 중앙값 대비 최대값.
@@ -190,18 +192,20 @@ func _finish(reached_end: bool, wall: float) -> void:
 		if score.count_of(Judge.Verdict.TOO_LATE) > 0:
 			print("  FAIL 자동플레이인데 미스가 %d 건"
 				% score.count_of(Judge.Verdict.TOO_LATE)); fails += 1
-	# 무입력이면 정확도 실패 조건에 걸려서 일찍 끝나는 게 '정상'이다.
-	# 자동플레이(미스 없음)일 때만 완주를 요구한다.
-	var grace: int = int(_main.get("fail_grace_judgments"))
-	if autoplay and miss_every == 0:
+	# 실패는 체력으로 판정한다. 그리고 한 번도 안 누른 플레이어는 체력이 안 깎인다
+	# (Score.started) — 보고만 있는 걸 실패로 치면 안 되기 때문이다.
+	# 따라서 무입력은 '전부 미스지만 완주' 가 정상이다.
+	if not autoplay:
+		if score.total < n:
+			print("  FAIL 무입력인데 완주 못 함 (판정 %d < 타일 %d) — started 가드가 깨졌나?"
+				% [score.total, n]); fails += 1
+		if score.health < Score.HEALTH_MAX - 0.01:
+			print("  FAIL 무입력인데 체력이 깎였다 (%.1f)" % score.health); fails += 1
+	elif miss_every == 0:
 		if score.total < n:
 			print("  FAIL 자동플레이인데 판정 %d < 타일 %d" % [score.total, n]); fails += 1
-	else:
-		if score.total < grace:
-			print("  FAIL 유예(%d) 전에 끝났다 (판정 %d)" % [grace, score.total]); fails += 1
-		if not autoplay and score.total > grace + 3:
-			print("  FAIL 무입력인데 실패 조건이 안 걸렸다 (판정 %d, 유예 %d)"
-				% [score.total, grace]); fails += 1
+		if score.health < Score.HEALTH_MAX - 0.01:
+			print("  FAIL 전부 정확인데 체력이 깎였다 (%.1f)" % score.health); fails += 1
 	# 역행은 구조적으로 일어난다. 횟수가 아니라 크기로 본다.
 	# 한 청크(~6ms)를 크게 넘으면 그건 다른 문제다.
 	# 카메라 경로가 불연속이면 프레임당 이동량이 중앙값 대비 크게 튄다.
@@ -209,8 +213,20 @@ func _finish(reached_end: bool, wall: float) -> void:
 	if p99 > maxf(med * 4.0 + 1.0, 6.0):
 		print("  FAIL 카메라 p99 %.1fpx 가 중앙 %.1fpx 대비 과도하다 — 경로가 불연속인가?"
 			% [p99, med]); fails += 1
-	if mx > 20.0:
-		print("  FAIL 카메라가 한 프레임에 %.1fpx 튀었다" % mx); fails += 1
+	# '한 프레임 최대 이동'으로 가드하면 안 된다. 그건 카메라 설계가 아니라
+	# 프레임 시간 안정성을 재는 값이라, OS 히치 한 번에 터진다.
+	# 실측: 같은 코드로 4회 돌려 최대값이 5.2 / 10.0 / 17.5 / 36.3px 로 흩어졌고
+	# p99 는 3.0~3.3px 로 일관됐다.
+	# 진짜 불연속이면 '여러 프레임'에 걸쳐 나타난다 — 그 비율로 본다.
+	var spikes := 0
+	for st in _cam_steps:
+		if st > med * 8.0 + 2.0:
+			spikes += 1
+	var spike_pct := 100.0 * spikes / maxf(float(_cam_steps.size()), 1.0)
+	print("  카메라 스파이크 %d프레임 (%.2f%%)" % [spikes, spike_pct])
+	if spike_pct > 0.3:
+		print("  FAIL 카메라 스파이크가 %.2f%% — 산발적 히치가 아니라 구조적이다"
+			% spike_pct); fails += 1
 	# 흔들림. 순간 위치를 쫓으면 경로의 지그재그를 그대로 따라가 5.9~8.2x 가 된다.
 	# 타깃이 지그재그를 그대로 쫓는지 (순간 위치 추적이면 5.9~8.2x)
 	if waste > 3.0:
