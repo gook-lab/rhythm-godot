@@ -1,4 +1,4 @@
-[gd_scene load_steps=11 format=3]
+[gd_scene load_steps=10 format=3]
 
 [ext_resource type="Script" path="res://scripts/Main.gd" id="1_main"]
 [ext_resource type="Script" path="res://scripts/PlanetPair.gd" id="2_pair"]
@@ -6,7 +6,6 @@
 [ext_resource type="Script" path="res://scripts/Judge.gd" id="4_judge"]
 [ext_resource type="Script" path="res://scripts/Score.gd" id="5_score"]
 [ext_resource type="Script" path="res://scripts/TimingBar.gd" id="6_bar"]
-[ext_resource type="Script" path="res://scripts/SpeedMarkers.gd" id="8_mark"]
 [ext_resource type="Script" path="res://scripts/TilePath.gd" id="9_tile"]
 [ext_resource type="Resource" path="res://charts/song140.tres" id="7_chart"]
 
@@ -34,9 +33,6 @@ position_smoothing_speed = 10.0
 
 [node name="Path" type="Node2D" parent="World"]
 script = ExtResource("9_tile")
-
-[node name="SpeedMarkers" type="Node2D" parent="World"]
-script = ExtResource("8_mark")
 
 [node name="PlanetPair" type="Node2D" parent="World"]
 script = ExtResource("2_pair")

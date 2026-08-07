@@ -46,7 +46,6 @@ const COUNTDOWN_BEATS := 4
 @export var chart: Chart
 
 @onready var _path: TilePath = $World/Path
-@onready var _markers: SpeedMarkers = $World/SpeedMarkers
 @onready var _camera: Camera2D = $World/Camera2D
 @onready var _planets: PlanetPair = $World/PlanetPair
 @onready var _popup: Label = $World/JudgmentPopup
@@ -111,7 +110,6 @@ func _ready() -> void:
 	_positions = ChartRuntime.tile_positions(chart.angles, TILE_SPACING)
 	_song_len_ms = chart.audio.get_length() * 1000.0
 	_draw_path()
-	_markers.setup(chart, _positions)
 
 	_offset_slider.value_changed.connect(_on_offset_changed)
 	_on_offset_changed(_offset_slider.value)
@@ -151,7 +149,7 @@ func _restart() -> void:
 
 
 func _draw_path() -> void:
-	_path.setup(_positions, chart.angles, TILE_SPACING)
+	_path.setup(_positions, chart.angles, TILE_SPACING, chart)
 
 
 ## 렌더: 타일 i 로 가는 공전을 세팅한다. (렌더 커서 _vis 를 따른다)

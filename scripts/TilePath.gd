@@ -37,6 +37,12 @@ const EDGE_TARGET := Color(1.65, 1.50, 0.82)       # 2.20 -> 1.65
 var _positions: PackedVector2Array
 var _angles: PackedFloat32Array
 var _side := 96.0
+
+## 마커(소용돌이·토끼/달팽이)는 타일의 '일부'다.
+## 별도 노드로 그리면 타일이 떨어져 나간 뒤에도 마커가 허공에 남는다(실제로 그랬다).
+## 타일과 같은 함수에서 그리면 낙하·회전·페이드를 공짜로 따라간다.
+var _twirl_set := {}
+var _speed_at := {}     # tile -> [배율, 빨라짐 여부]
 var _cursor := 1        # 지금 밟아야 할 타일
 var _last_cursor := -1
 
@@ -55,11 +61,22 @@ var _falls := {}
 var _rng := RandomNumberGenerator.new()
 
 
-func setup(positions: PackedVector2Array, angles: PackedFloat32Array, side: float) -> void:
+func setup(positions: PackedVector2Array, angles: PackedFloat32Array, side: float,
+		chart: Chart = null) -> void:
 	_positions = positions
 	_angles = angles
 	_side = side
 	_last_cursor = -1
+	_twirl_set.clear()
+	_speed_at.clear()
+	if chart != null:
+		for t in chart.twirl_tiles:
+			_twirl_set[int(t)] = ChartRuntime.spin_at(chart, int(t))
+		for k in range(chart.speed_changes.size()):
+			var sc := chart.speed_changes[k]
+			var prev := 1.0 if k == 0 else chart.speed_changes[k - 1].y
+			if sc.y > 0.0 and not is_equal_approx(sc.y, prev):
+				_speed_at[int(sc.x)] = [sc.y, sc.y > prev]
 	queue_redraw()
 
 
@@ -189,6 +206,7 @@ func _draw_falling(t: int, half: float) -> void:
 	outline.append(q[0])
 	draw_polyline(outline, Color(EDGE_PASSED.r, EDGE_PASSED.g, EDGE_PASSED.b,
 		EDGE_PASSED.a * k), 1.5, true)
+	_draw_markers(t, pos, f[2] * e, k)
 
 
 func _draw_tile(i: int, half: float, fill: Color, edge: Color, edge_w: float) -> void:
@@ -199,3 +217,34 @@ func _draw_tile(i: int, half: float, fill: Color, edge: Color, edge_w: float) ->
 	var outline := q.duplicate()
 	outline.append(q[0])
 	draw_polyline(outline, edge, edge_w, true)
+	_draw_markers(i, _positions[i], 0.0, 1.0)
+
+
+## 타일 위 마커. 낙하 중에도 같은 변환(위치·회전·투명도)으로 따라간다.
+func _draw_markers(tile: int, center: Vector2, rot_deg: float, alpha: float) -> void:
+	if _twirl_set.has(tile):
+		var spin: int = _twirl_set[tile]
+		var pts := PackedVector2Array()
+		var steps := 26
+		var rot := deg_to_rad(rot_deg)
+		for n in range(steps + 1):
+			var f := float(n) / steps
+			var a := f * TAU * 1.6 * (1.0 if spin >= 0 else -1.0) + rot
+			var r := (6.0 + 16.0 * f)
+			pts.append(center + Vector2(cos(a), -sin(a)) * r)
+		draw_polyline(pts, Color(0.85, 0.55, 1.0, 0.9 * alpha), 2.5, true)
+	if _speed_at.has(tile):
+		var e: Array = _speed_at[tile]
+		var mult: float = e[0]
+		var up: bool = e[1]
+		var col := Color(1.0, 0.85, 0.3, alpha) if up else Color(0.5, 0.8, 1.0, alpha)
+		var p := center + Vector2(0, -46).rotated(-deg_to_rad(rot_deg))
+		var sz := 13.0
+		var tri := PackedVector2Array([
+			p + (Vector2(0, -sz) if up else Vector2(0, sz)),
+			p + Vector2(-sz * 0.9, sz * 0.6 if up else -sz * 0.6),
+			p + Vector2(sz * 0.9, sz * 0.6 if up else -sz * 0.6),
+		])
+		draw_colored_polygon(tri, col)
+		draw_string(ThemeDB.fallback_font, p + Vector2(-16, 30), "x%g" % mult,
+			HORIZONTAL_ALIGNMENT_CENTER, 32, 13, col)
