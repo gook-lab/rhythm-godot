@@ -15,9 +15,20 @@ extends Node2D
 const TILE_SPACING := 96.0
 
 ## 카메라가 평균낼 타일 범위(앞뒤). 크면 차분하지만 행성이 화면 중심에서 멀어진다.
-## 실측(창 / 낭비배수 / 행성까지 최대거리):
-##   ±1 -> 4.07x / 162px · ±2 -> 3.32x / 194px · ±3 -> 3.10x / 242px
-const CAMERA_WINDOW := 2
+##
+## 실측 (창 / 경로낭비배수 / 행성까지 최대거리):
+##   demo(20초, 루프 적음)  ±1 4.07x/162px · ±2 3.32x/194px · ±3 3.10x/242px
+##   song140(실제 곡)       ±2 7.35x/212px · ±5 4.75x/274px
+##                          ±8 2.50x/370px · ±12 2.36x/460px
+##
+## 뷰포트가 1280x720 이라 화면 반높이가 360px 다. ±8 부터는 행성이 화면 밖으로 나간다.
+## 그래서 ±5 가 안전한 상한이다.
+##
+## 근본 원인은 카메라가 아니라 경로다: 0.5박 홉은 '항상 같은 방향으로' -90도 돈다.
+## 8분음이 네 번 연속되면 닫힌 사각형이 된다. song140 에는 0.5박이 80개다.
+## 실제 얼불춤이 타일의 25% 에 twirl(회전방향 반전)을 거는 게 바로 이것 때문이다 —
+## twirl 이 있어야 연속 8분음이 원이 아니라 지그재그가 된다. (아직 미구현)
+const CAMERA_WINDOW := 5
 
 ## 흔들림: 세기(px) · 감쇠(px/초) · 주파수(Hz) · 발동 최소 콤보
 const SHAKE_STRENGTH := 7.0
@@ -28,6 +39,7 @@ const SHAKE_MIN_COMBO := 3
 @export var chart: Chart
 
 @onready var _path: Line2D = $World/Path
+@onready var _markers: SpeedMarkers = $World/SpeedMarkers
 @onready var _camera: Camera2D = $World/Camera2D
 @onready var _planets: PlanetPair = $World/PlanetPair
 @onready var _popup: Label = $World/JudgmentPopup
@@ -83,6 +95,7 @@ func _ready() -> void:
 	_positions = ChartRuntime.tile_positions(chart.angles, TILE_SPACING)
 	_song_len_ms = chart.audio.get_length() * 1000.0
 	_draw_path()
+	_markers.setup(chart, _positions)
 
 	_offset_slider.value_changed.connect(_on_offset_changed)
 	_on_offset_changed(_offset_slider.value)
@@ -328,10 +341,17 @@ func _update_hud(t: float) -> void:
 	# 체감 BPM = 타일 BPM / 현재 홉 박자.
 	# 1/6박 홉을 340bpm 으로 밟으면 체감 2040 이다. 얼불춤 오버레이가 보여주는 값이고,
 	# 판정창이 왜 좁아져야 하는지를 화면에서 바로 보여준다.
+	# 타일 BPM 은 속도 타일(토끼/달팽이)이 적용된 '실효' 값이다.
+	# 체감 BPM = 실효 BPM / 현재 홉 박자 — 1/6박 홉을 340 으로 밟으면 2040 이 된다.
 	var hop := ChartRuntime.beats_to_reach(chart.angles, _idx)
-	var felt := chart.bpm / hop if hop > 0.0 else chart.bpm
-	_hud_info.text = "음악 %s / %s\n타일 BPM %.0f   체감 BPM %.0f\n타일 %d / %d" % [
-		_fmt_time(t), _fmt_time(_song_len_ms), chart.bpm, felt,
+	var ebpm := ChartRuntime.effective_bpm_at(chart, maxi(_idx - 1, 0))
+	var felt := ebpm / hop if hop > 0.0 else ebpm
+	var mult := ChartRuntime.speed_mult_at(chart, maxi(_idx - 1, 0))
+	var tag := ""
+	if not is_equal_approx(mult, 1.0):
+		tag = "  %s x%g" % ["토끼" if mult > 1.0 else "달팽이", mult]
+	_hud_info.text = "음악 %s / %s\n타일 BPM %.0f%s   체감 BPM %.0f\n타일 %d / %d" % [
+		_fmt_time(t), _fmt_time(_song_len_ms), ebpm, tag, felt,
 		_idx, _hit_times.size() - 1]
 
 	var s := _score.delta_stats()

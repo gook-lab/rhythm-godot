@@ -34,6 +34,7 @@ func _init() -> void:
 	t_judge_windows()
 	t_judge_classify()
 	t_score()
+	t_speed_tiles()
 
 	print("\n%d passed, %d failed" % [_pass, _fail])
 	quit(_fail)
@@ -326,3 +327,67 @@ func t_score() -> void:
 	ok(st.n == 2, "표본에 미스 제외 (n=%d)" % st.n)
 	ok(absf(st.mean) < 1e-6, "평균 %.3f (5 와 -5 라 0)" % st.mean)
 	s.free()
+
+
+## 토끼/달팽이 타일 (얼불춤의 SetSpeed).
+## 배속이 올라가면 타일 간격이 좁아지고, 판정창도 같이 좁아져야 한다.
+func t_speed_tiles() -> void:
+	print("속도 타일 — 배율이 그 타일부터 적용된다")
+	var c := make_chart([0.0, 0.0, 0.0, 0.0, 0.0], 120.0, 0.0)  # 전부 직선 = 1박씩
+
+	# 변경 없으면 전부 1.0
+	eq(ChartRuntime.speed_mult_at(c, 0), 1.0, "변경 없음 -> 1.0")
+	eq(ChartRuntime.effective_bpm_at(c, 3), 120.0, "실효 BPM = chart.bpm")
+	var h0 := ChartRuntime.hit_times_ms(c)
+	eq(h0[1] - h0[0], 500.0, "120bpm 1박 = 500ms")
+	eq(h0[4] - h0[3], 500.0, "끝까지 500ms")
+
+	# 타일 2 부터 2배속(토끼)
+	c.speed_changes = PackedVector2Array([Vector2(2, 2.0)])
+	eq(ChartRuntime.speed_mult_at(c, 1), 1.0, "타일 1 은 아직 1.0")
+	eq(ChartRuntime.speed_mult_at(c, 2), 2.0, "타일 2 부터 2.0")
+	eq(ChartRuntime.speed_mult_at(c, 4), 2.0, "그 뒤로 계속 2.0")
+	eq(ChartRuntime.effective_bpm_at(c, 3), 240.0, "실효 BPM 240")
+	var h1 := ChartRuntime.hit_times_ms(c)
+	eq(h1[1] - h1[0], 500.0, "타일1 도달: 축이 타일0 이라 1배속 500ms")
+	eq(h1[2] - h1[1], 500.0, "타일2 도달: 축이 타일1 이라 아직 1배속")
+	eq(h1[3] - h1[2], 250.0, "타일3 도달: 축이 타일2 라 2배속 250ms")
+	eq(h1[4] - h1[3], 250.0, "그 뒤로 250ms")
+
+	# 달팽이 (0.5배속)
+	c.speed_changes = PackedVector2Array([Vector2(1, 0.5)])
+	var h2 := ChartRuntime.hit_times_ms(c)
+	eq(h2[2] - h2[1], 1000.0, "0.5배속 -> 1000ms")
+
+	# 여러 변경: 마지막 것이 이긴다(누적 아님)
+	c.speed_changes = PackedVector2Array([Vector2(1, 2.0), Vector2(3, 4.0)])
+	eq(ChartRuntime.speed_mult_at(c, 2), 2.0, "타일 2 -> 2.0")
+	eq(ChartRuntime.speed_mult_at(c, 3), 4.0, "타일 3 -> 4.0 (2*4 아님)")
+
+	# 단조증가는 배속이 있어도 유지된다
+	var h3 := ChartRuntime.hit_times_ms(c)
+	var mono := true
+	for i in range(1, h3.size()):
+		if h3[i] < h3[i - 1]:
+			mono = false
+	ok(mono, "배속이 섞여도 단조증가")
+
+	# 0 이나 음수 배율은 무시한다 (0 으로 나누면 inf 가 퍼진다)
+	c.speed_changes = PackedVector2Array([Vector2(1, 0.0), Vector2(2, -3.0)])
+	eq(ChartRuntime.speed_mult_at(c, 3), 1.0, "0/음수 배율은 무시")
+	var h4 := ChartRuntime.hit_times_ms(c)
+	var finite := true
+	for i in range(h4.size()):
+		if not is_finite(h4[i]):
+			finite = false
+	ok(finite, "잘못된 배율에도 inf 가 안 퍼진다")
+
+	# 배속 구간에서 판정창이 이웃에 안 닿는지
+	c.speed_changes = PackedVector2Array([Vector2(1, 4.0)])
+	var h5 := ChartRuntime.hit_times_ms(c)
+	var j := Judge.new()
+	var gap := h5[3] - h5[2]
+	j.set_gaps(gap, gap)
+	ok(j.miss_ms * 2.0 <= gap, "4배속 구간(%.0fms)에서도 판정창(%.0fms)이 안 겹친다"
+		% [gap, j.miss_ms * 2.0])
+	j.free()

@@ -68,6 +68,25 @@ static func beats_to_reach(angles: PackedFloat32Array, i: int) -> float:
 	return beats_for_tile(incoming_deg(angles, i), angles[i - 1])
 
 
+## 타일 i 에서 유효한 속도 배율. 그 타일까지의 마지막 변경을 따른다.
+static func speed_mult_at(chart: Chart, tile: int) -> float:
+	if chart == null:
+		return 1.0
+	var m := 1.0
+	for k in range(chart.speed_changes.size()):
+		var sc := chart.speed_changes[k]
+		if int(sc.x) <= tile and sc.y > 0.0:
+			m = sc.y
+	return m
+
+
+## 타일 i 에서의 실효 BPM. HUD 의 '타일 BPM' 표시가 이걸 쓴다.
+static func effective_bpm_at(chart: Chart, tile: int) -> float:
+	if chart == null:
+		return 0.0
+	return chart.bpm * speed_mult_at(chart, tile)
+
+
 ## 각 타일을 밟아야 하는 절대 시각(ms)의 누적 배열.
 ## 길이는 chart.angles.size() 와 같고, [0] 은 출발점이라 판정 대상이 아니다.
 static func hit_times_ms(chart: Chart) -> PackedFloat32Array:
@@ -84,9 +103,11 @@ static func hit_times_ms(chart: Chart) -> PackedFloat32Array:
 
 	out.resize(chart.angles.size())
 	out[0] = chart.start_offset_ms  # 타일 0 = 출발점, 판정 없음
-	var spb := 60000.0 / chart.bpm  # ms per beat
+	var spb := 60000.0 / chart.bpm  # ms per beat (배속 1.0 기준)
 	for i in range(1, chart.angles.size()):
-		out[i] = out[i - 1] + beats_to_reach(chart.angles, i) * spb
+		# 타일 i 로 가는 공전은 축이 타일 i-1 이므로, 그 타일에 걸린 배속을 따른다.
+		var mult := speed_mult_at(chart, i - 1)
+		out[i] = out[i - 1] + beats_to_reach(chart.angles, i) * spb / mult
 	return out
 
 
