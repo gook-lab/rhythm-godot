@@ -22,6 +22,10 @@ func _init() -> void:
 		quit(1)
 		return
 
+	# 헤드리스 테스트가 실제 스피커로 소리를 내면 안 된다.
+	# 버스 음소거는 믹싱을 멈추지 않으므로 get_playback_position() 은 그대로 흐른다.
+	AudioServer.set_bus_mute(0, true)
+
 	var player := AudioStreamPlayer.new()
 	root.add_child(player)
 	# add_child 직후엔 아직 트리에 들어가기 전이라 play() 가 실패한다

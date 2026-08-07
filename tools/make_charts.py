@@ -37,25 +37,59 @@ def beats_for_tile(prev, cur):
     return (360.0 if abs(s) < 1e-9 else s) / 180.0
 
 
-def angles_from_hops(hops, start_deg=0.0):
+def signed_turn(b, spin):
+    """홉 b 를 spin 방향으로 갈 때의 상대 회전(도), (-180, 180]."""
+    t = (180.0 + spin * b * 180.0) % 360.0
+    return t - 360.0 if t > 180.0 else t
+
+
+def angles_from_hops(hops, start_deg=0.0, loop_guard_deg=None):
     """hops[k] = 타일 k+2 에 도달하는 박자.
 
     타일 1 로 가는 첫 홉은 항상 1박이라 입력에서 뺐다.
     반환 길이는 len(hops)+2 — 마지막 하나는 최종 타일의 나갈 방향(미사용).
+
+    loop_guard_deg 를 주면 twirl 을 자동 배치한다.
+    0.5박 홉은 CCW 에서 항상 -90도라 네 번 연속이면 닫힌 사각형이 된다.
+    누적 회전이 임계를 넘기 전에 방향을 뒤집으면 원 대신 지그재그가 된다.
+    반환은 (각도배열, twirl타일목록).
     """
     ang = [norm(start_deg)]
-    for b in hops:
-        ang.append(norm(ang[-1] + 180.0 + b * 180.0))
+    twirls = []
+    spin = 1
+    net = 0.0
+    for k, b in enumerate(hops):
+        if loop_guard_deg is not None:
+            if abs(net + signed_turn(b, spin)) > loop_guard_deg + 1e-9:
+                spin = -spin
+                twirls.append(k + 1)   # 이 홉의 축 타일
+                net = 0.0
+        net += signed_turn(b, spin)
+        ang.append(norm(ang[-1] + 180.0 + spin * b * 180.0))
     ang.append(ang[-1])  # 최종 타일의 나갈 방향: 직선으로 채운다
-    return ang
+    return ang, twirls
 
 
-def hops_of(ang):
+def spin_at(twirls, tile):
+    s = 1
+    for t in twirls:
+        if t <= tile:
+            s = -s
+    return s
+
+
+def beats_for_tile_spin(prev, cur, spin):
+    d = (cur - (prev + 180.0)) if spin >= 0 else ((prev + 180.0) - cur)
+    s = norm(d)
+    return (360.0 if abs(s) < 1e-9 else s) / 180.0
+
+
+def hops_of(ang, twirls=()):
     """ChartRuntime.beats_to_reach 와 같은 계산. 반환 길이 = len(ang)-1."""
     out = []
     for i in range(1, len(ang)):
         inc = ang[i - 2] if i >= 2 else ang[0]
-        out.append(beats_for_tile(inc, ang[i - 1]))
+        out.append(beats_for_tile_spin(inc, ang[i - 1], spin_at(twirls, i - 1)))
     return out
 
 
@@ -68,14 +102,14 @@ def tile_positions(ang, r=RADIUS):
     return p
 
 
-def verify(ang, hops_wanted):
+def verify(ang, hops_wanted, twirls=()):
     """런타임과 같은 계산으로 (1) 의도한 리듬이 나오는지 (2) 착지가 맞는지 확인.
 
     (2)가 이 파일에 있는 이유: 공전 끝점이 다음 타일 좌표와 어긋나는 버그가 있었다.
     직선 구간에선 오차 0 이라 안 보이고, 90도 턴에서 135px, U턴에서 192px 벗어났다.
     생성 단계에서 같이 잰다.
     """
-    hops = hops_of(ang)
+    hops = hops_of(ang, twirls)
     want = [1.0] + list(hops_wanted)
     assert len(hops) == len(want), f"홉 개수 {len(hops)} != {len(want)}"
     for i, (g, w) in enumerate(zip(hops, want)):
@@ -85,7 +119,9 @@ def verify(ang, hops_wanted):
     worst = 0.0
     for i in range(1, len(ang)):
         inc = ang[i - 2] if i >= 2 else ang[0]
-        end = math.radians(norm(inc + 180.0) + beats_for_tile(inc, ang[i - 1]) * 180.0)
+        sp = spin_at(twirls, i - 1)
+        sw = beats_for_tile_spin(inc, ang[i - 1], sp) * 180.0 * (1 if sp >= 0 else -1)
+        end = math.radians(norm(inc + 180.0) + sw)
         lx = pos[i - 1][0] + math.cos(end) * RADIUS
         ly = pos[i - 1][1] - math.sin(end) * RADIUS
         worst = max(worst, math.hypot(lx - pos[i][0], ly - pos[i][1]))
@@ -105,11 +141,12 @@ def fmt(x):
 LEAD_IN_BEATS = 4.0
 
 
-def write_tres(name, title, bpm, hops_wanted, start_offset_ms=None, speed_changes=None):
+def write_tres(name, title, bpm, hops_wanted, start_offset_ms=None, speed_changes=None,
+               loop_guard_deg=None):
     if start_offset_ms is None:
         start_offset_ms = LEAD_IN_BEATS * 60000.0 / bpm
-    ang = angles_from_hops(hops_wanted)
-    hops, worst = verify(ang, hops_wanted)
+    ang, twirls = angles_from_hops(hops_wanted, loop_guard_deg=loop_guard_deg)
+    hops, worst = verify(ang, hops_wanted, twirls)
     total = sum(hops)
     path = os.path.join(HERE, "charts", name + ".tres")
     with open(path, "w", encoding="utf-8") as f:
@@ -122,19 +159,24 @@ def write_tres(name, title, bpm, hops_wanted, start_offset_ms=None, speed_change
         f.write("angles = PackedFloat32Array(%s)\n" % ", ".join(fmt(a) for a in ang))
         f.write("start_offset_ms = %s\n" % fmt(float(start_offset_ms)))
         f.write('audio = ExtResource("2_audio")\n')
+        if twirls:
+            f.write("twirl_tiles = PackedInt32Array(%s)\n"
+                    % ", ".join(str(t) for t in twirls))
         if speed_changes:
             f.write("speed_changes = PackedVector2Array(%s)\n"
                     % ", ".join("%d, %g" % (int(i), m) for i, m in speed_changes))
         f.write('title = "%s"\n' % title)
-    print("%-20s 타일 %3d · %6.1f박 · %5.1fs · 카운트인 %.0fms · 착지오차 %.5fpx"
+    print("%-20s 타일 %3d · %6.1f박 · %5.1fs · 카운트인 %.0fms · 착지오차 %.5fpx%s"
           % (name + ".tres", len(ang), total, total * 60.0 / bpm,
-             start_offset_ms, worst))
+             start_offset_ms, worst,
+             ("  twirl %d개" % len(twirls)) if twirls else ""))
     print("%-20s 홉: %s%s" % ("", [round(h, 3) for h in hops[:12]],
                               " ..." if len(hops) > 12 else ""))
     return ang
 
 
-def chart_from_song(meta_path, name, title, audio_res, speed_marks=None):
+def chart_from_song(meta_path, name, title, audio_res, speed_marks=None,
+                   loop_guard_deg=270.0):
     """곡의 멜로디 온셋에서 채보를 뽑는다.
 
     곡과 채보가 같은 소스에서 나와야 둘이 갈라지지 않는다.
@@ -165,7 +207,8 @@ def chart_from_song(meta_path, name, title, audio_res, speed_marks=None):
     try:
         ang = write_tres(name, title, bpm, gaps,
                          start_offset_ms=start_beat * 60000.0 / bpm,
-                         speed_changes=speed_changes)
+                         speed_changes=speed_changes,
+                         loop_guard_deg=loop_guard_deg)
     finally:
         AUDIO = prev_audio
     print("%-20s 첫 온셋 %g박 -> 카운트인 %.2fs · 심판 타일 %d"

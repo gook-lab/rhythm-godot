@@ -29,6 +29,14 @@ extends Resource
 ## (Judge.set_gaps). 그래서 3배속 구간에서도 판정창이 이웃 타일에 안 닿는다.
 @export var speed_changes: PackedVector2Array = PackedVector2Array()
 
+## Twirl 타일 (회전 방향 반전). 이 타일부터 공전이 반대로 돈다.
+##
+## 장식이 아니라 '경로 다양성의 유일한 수단'이다.
+## 0.5박 홉은 CCW 에서 항상 -90도(우회전)라 네 번 연속이면 닫힌 사각형이 된다.
+## twirl 로 CW 로 뒤집으면 같은 0.5박이 +90도(좌회전)가 되어 지그재그가 된다.
+## 실제 얼불춤 채보가 타일의 25% 에 twirl 을 거는 이유가 이것이다.
+@export var twirl_tiles: PackedInt32Array = PackedInt32Array()
+
 @export var title: String = ""
 
 

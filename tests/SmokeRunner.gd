@@ -46,6 +46,13 @@ var _shaking := 0                     # 카메라와 도는 행성 사이 최대
 
 
 func _ready() -> void:
+	# !! 헤드리스 테스트가 실제 스피커로 소리를 내면 안 된다.
+	#    --audio-driver CoreAudio 는 진짜 오디오 장치를 쓰기 때문에
+	#    그냥 두면 테스트를 돌릴 때마다 곡이 흘러나온다.
+	#    버스 음소거는 믹싱을 멈추지 않으므로 클럭 측정에 영향이 없다
+	#    (실측: 지터 1.14ms -> 0.95ms, 실행 간 편차 범위 안).
+	AudioServer.set_bus_mute(0, true)
+
 	var args := OS.get_cmdline_user_args()
 	autoplay = args.has("--autoplay")
 	for a in args:
@@ -196,11 +203,11 @@ func _finish(reached_end: bool, wall: float) -> void:
 		print("  FAIL 카메라가 한 프레임에 %.1fpx 튀었다" % mx); fails += 1
 	# 흔들림. 순간 위치를 쫓으면 경로의 지그재그를 그대로 따라가 5.9~8.2x 가 된다.
 	# 타깃이 지그재그를 그대로 쫓는지 (순간 위치 추적이면 5.9~8.2x)
-	if waste > 5.5:
+	if waste > 3.0:
 		print("  FAIL 카메라 타깃 낭비 %.2fx — 지그재그를 그대로 쫓고 있나?"
 			% waste); fails += 1
 	# 실제로 보이는 흔들림. 미스마다 흔들던 시절엔 18.01x 였다.
-	if seen_waste > 6.5:
+	if seen_waste > 4.0:
 		print("  FAIL 화면 흔들림 낭비 %.2fx — 흔들림이 과하다" % seen_waste); fails += 1
 
 	# 렌더 커서를 판정 커서에 묶으면 여기가 20~60% 로 뛴다.

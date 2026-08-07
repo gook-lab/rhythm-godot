@@ -35,6 +35,7 @@ func _init() -> void:
 	t_judge_classify()
 	t_score()
 	t_speed_tiles()
+	t_twirl()
 
 	print("\n%d passed, %d failed" % [_pass, _fail])
 	quit(_fail)
@@ -391,3 +392,62 @@ func t_speed_tiles() -> void:
 	ok(j.miss_ms * 2.0 <= gap, "4배속 구간(%.0fms)에서도 판정창(%.0fms)이 안 겹친다"
 		% [gap, j.miss_ms * 2.0])
 	j.free()
+
+
+## Twirl — 회전 방향 반전.
+##
+## 장식이 아니라 경로 다양성의 유일한 수단이다.
+## 0.5박 홉이 CCW 에서 항상 우회전이라 네 번 연속이면 닫힌 사각형이 되는데,
+## twirl 로 뒤집으면 같은 0.5박이 좌회전이 되어 지그재그가 된다.
+func t_twirl() -> void:
+	print("twirl — 같은 박자가 반대로 꺾인다")
+	# 0.5박: CCW 는 prev-90, CW 는 prev+90
+	eq(ChartRuntime.beats_for_tile(0.0, 270.0, 1), 0.5, "CCW: 0->270 은 0.5박")
+	eq(ChartRuntime.beats_for_tile(0.0, 90.0, -1), 0.5, "CW : 0->90 도 0.5박")
+	# 직선과 U턴은 방향과 무관해야 한다
+	eq(ChartRuntime.beats_for_tile(0.0, 0.0, 1), 1.0, "직선 CCW 1박")
+	eq(ChartRuntime.beats_for_tile(0.0, 0.0, -1), 1.0, "직선 CW 도 1박")
+	eq(ChartRuntime.beats_for_tile(0.0, 180.0, 1), 2.0, "U턴 CCW 2박")
+	eq(ChartRuntime.beats_for_tile(0.0, 180.0, -1), 2.0, "U턴 CW 도 2박")
+
+	print("twirl — spin_at 이 타일마다 뒤집힌다")
+	var c := make_chart([0.0, 0.0, 0.0, 0.0, 0.0], 120.0, 0.0)
+	ok(ChartRuntime.spin_at(c, 3) == 1, "twirl 없으면 +1")
+	c.twirl_tiles = PackedInt32Array([2])
+	ok(ChartRuntime.spin_at(c, 1) == 1, "타일 1 은 아직 +1")
+	ok(ChartRuntime.spin_at(c, 2) == -1, "타일 2 부터 -1")
+	c.twirl_tiles = PackedInt32Array([2, 4])
+	ok(ChartRuntime.spin_at(c, 3) == -1, "타일 3 은 -1")
+	ok(ChartRuntime.spin_at(c, 4) == 1, "두 번 뒤집으면 다시 +1")
+
+	print("twirl — 착지 불변식은 방향이 뒤집혀도 유지된다")
+	# 이게 깨지면 twirl 구간에서만 행성이 타일 밖에 내린다.
+	const R := 96.0
+	var cases := {
+		"CW 0.5박 연속": [0.0, 90.0, 180.0, 270.0, 0.0],
+		"CW 90도 계단": [0.0, 90.0, 0.0, 270.0, 0.0],
+		"CW U턴": [0.0, 180.0, 0.0],
+		"CW 15도격자": [15.0, 105.0, 240.0, 60.0, 330.0],
+	}
+	for name in cases:
+		var angles := PackedFloat32Array(cases[name])
+		var pos := ChartRuntime.tile_positions(angles, R)
+		var worst := 0.0
+		for i in range(1, angles.size()):
+			var a := ChartRuntime.orbit_start_deg(angles, i)
+			var sw := ChartRuntime.orbit_sweep_deg(angles, i, -1)   # 전 구간 twirl
+			var e := deg_to_rad(a + sw)
+			var landed: Vector2 = pos[i - 1] + Vector2(cos(e), -sin(e)) * R
+			worst = maxf(worst, landed.distance_to(pos[i]))
+		ok(worst < 0.01, "%s — 착지 오차 %.4f px" % [name, worst])
+
+	print("twirl — 히트타임에 반영된다")
+	# 같은 각도 배열이라도 twirl 이 걸리면 박자가 달라진다.
+	var c2 := make_chart([0.0, 270.0, 180.0], 120.0, 0.0)   # CCW 로 0.5박씩
+	var h_no := ChartRuntime.hit_times_ms(c2)
+	c2.twirl_tiles = PackedInt32Array([1])
+	var h_tw := ChartRuntime.hit_times_ms(c2)
+	ok(not is_equal_approx(h_no[2], h_tw[2]),
+		"twirl 이 히트타임을 바꾼다 (%.0f -> %.0f)" % [h_no[2], h_tw[2]])
+	# CCW 0.5박이 CW 에선 1.5박이 된다 (270도 상대각의 반대편)
+	eq(h_tw[2] - h_tw[1], 750.0, "CW 에서 같은 기하는 1.5박 = 750ms")

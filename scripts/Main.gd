@@ -16,19 +16,18 @@ const TILE_SPACING := 96.0
 
 ## 카메라가 평균낼 타일 범위(앞뒤). 크면 차분하지만 행성이 화면 중심에서 멀어진다.
 ##
-## 실측 (창 / 경로낭비배수 / 행성까지 최대거리):
-##   demo(20초, 루프 적음)  ±1 4.07x/162px · ±2 3.32x/194px · ±3 3.10x/242px
-##   song140(실제 곡)       ±2 7.35x/212px · ±5 4.75x/274px
-##                          ±8 2.50x/370px · ±12 2.36x/460px
+## 실측 (창 / 경로낭비배수 / 행성까지 최대거리) — song140 기준:
+##   twirl 없을 때  ±2 7.35x/212px · ±5 4.75x/274px · ±8 2.50x/370px
+##   twirl 적용 후  ±1 2.52x/176px · ±2 2.05x/212px · ±3 1.75x/241px · ±5 1.46x/274px
 ##
-## 뷰포트가 1280x720 이라 화면 반높이가 360px 다. ±8 부터는 행성이 화면 밖으로 나간다.
-## 그래서 ±5 가 안전한 상한이다.
+## 뷰포트가 1280x720 이라 화면 반높이가 360px 다. 행성이 그보다 멀어지면 화면 밖이다.
 ##
-## 근본 원인은 카메라가 아니라 경로다: 0.5박 홉은 '항상 같은 방향으로' -90도 돈다.
-## 8분음이 네 번 연속되면 닫힌 사각형이 된다. song140 에는 0.5박이 80개다.
-## 실제 얼불춤이 타일의 25% 에 twirl(회전방향 반전)을 거는 게 바로 이것 때문이다 —
-## twirl 이 있어야 연속 8분음이 원이 아니라 지그재그가 된다. (아직 미구현)
-const CAMERA_WINDOW := 5
+## twirl 을 넣기 전에는 경로가 너무 루프를 그려서 ±5 까지 넓혀도 4.75x 였다.
+## 근본 원인이 카메라가 아니라 경로였기 때문이다 —
+## 0.5박 홉은 CCW 에서 '항상' -90도라 네 번 연속이면 닫힌 사각형이 된다.
+## twirl 로 회전 방향을 뒤집으면 같은 0.5박이 +90도가 되어 지그재그가 된다.
+## 그래서 지금은 ±3 으로 좁혀도 1.75x 다 — 흔들림도 줄고 행성도 중앙에 가깝다.
+const CAMERA_WINDOW := 3
 
 ## 흔들림: 세기(px) · 감쇠(px/초) · 주파수(Hz) · 발동 최소 콤보
 const SHAKE_STRENGTH := 7.0
@@ -139,10 +138,12 @@ func _draw_path() -> void:
 func _configure_orbit(i: int) -> void:
 	if i <= 0 or i >= chart.angles.size():
 		return
+	# 회전 방향(twirl)은 축 타일(i-1)의 상태를 따른다. 스윕 부호가 곧 방향이다.
+	var spin := ChartRuntime.spin_at(chart, i - 1)
 	_planets.configure(
 		_positions[i - 1],
 		ChartRuntime.orbit_start_deg(chart.angles, i),
-		ChartRuntime.orbit_sweep_deg(chart.angles, i),
+		ChartRuntime.orbit_sweep_deg(chart.angles, i, spin),
 		TILE_SPACING)
 
 
@@ -343,7 +344,8 @@ func _update_hud(t: float) -> void:
 	# 판정창이 왜 좁아져야 하는지를 화면에서 바로 보여준다.
 	# 타일 BPM 은 속도 타일(토끼/달팽이)이 적용된 '실효' 값이다.
 	# 체감 BPM = 실효 BPM / 현재 홉 박자 — 1/6박 홉을 340 으로 밟으면 2040 이 된다.
-	var hop := ChartRuntime.beats_to_reach(chart.angles, _idx)
+	var hop := ChartRuntime.beats_to_reach(chart.angles, _idx,
+		ChartRuntime.spin_at(chart, maxi(_idx - 1, 0)))
 	var ebpm := ChartRuntime.effective_bpm_at(chart, maxi(_idx - 1, 0))
 	var felt := ebpm / hop if hop > 0.0 else ebpm
 	var mult := ChartRuntime.speed_mult_at(chart, maxi(_idx - 1, 0))

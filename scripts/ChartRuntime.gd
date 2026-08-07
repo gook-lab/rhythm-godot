@@ -40,8 +40,14 @@ static func normalize360(deg: float) -> float:
 
 
 ## 타일 prev 에서 타일 cur 로 넘어갈 때의 대기 박자 수.
-static func beats_for_tile(prev: float, cur: float) -> float:
-	var sweep := normalize360(cur - (prev + 180.0))
+##
+## spin = +1 이면 반시계(기본), -1 이면 시계(twirl 걸린 상태).
+## 방향이 반대면 같은 기하가 다른 박자가 되고, 거꾸로 같은 박자가 반대로 꺾인다:
+##   0.5박 -> CCW 는 prev-90(우회전) · CW 는 prev+90(좌회전)
+## 착지 불변식은 양쪽 다 성립한다 — 끝각이 어느 쪽이든 angles[i-1] 이다.
+static func beats_for_tile(prev: float, cur: float, spin: int = 1) -> float:
+	var sweep := normalize360(cur - (prev + 180.0)) if spin >= 0 \
+		else normalize360((prev + 180.0) - cur)
 	if is_zero_approx(sweep):
 		sweep = 360.0  # 제자리 = 한 바퀴 (U턴)
 	return sweep / 180.0
@@ -62,10 +68,22 @@ static func incoming_deg(angles: PackedFloat32Array, i: int) -> float:
 
 
 ## 타일 i 에 도달하는 데 걸리는 박자.
-static func beats_to_reach(angles: PackedFloat32Array, i: int) -> float:
+static func beats_to_reach(angles: PackedFloat32Array, i: int, spin: int = 1) -> float:
 	if i <= 0 or i >= angles.size():
 		return 0.0
-	return beats_for_tile(incoming_deg(angles, i), angles[i - 1])
+	return beats_for_tile(incoming_deg(angles, i), angles[i - 1], spin)
+
+
+## 타일에서의 회전 방향. +1 = 반시계(기본), -1 = 시계.
+## twirl 타일을 하나 지날 때마다 뒤집힌다.
+static func spin_at(chart: Chart, tile: int) -> int:
+	if chart == null:
+		return 1
+	var s := 1
+	for k in range(chart.twirl_tiles.size()):
+		if chart.twirl_tiles[k] <= tile:
+			s = -s
+	return s
 
 
 ## 타일 i 에서 유효한 속도 배율. 그 타일까지의 마지막 변경을 따른다.
@@ -105,9 +123,10 @@ static func hit_times_ms(chart: Chart) -> PackedFloat32Array:
 	out[0] = chart.start_offset_ms  # 타일 0 = 출발점, 판정 없음
 	var spb := 60000.0 / chart.bpm  # ms per beat (배속 1.0 기준)
 	for i in range(1, chart.angles.size()):
-		# 타일 i 로 가는 공전은 축이 타일 i-1 이므로, 그 타일에 걸린 배속을 따른다.
+		# 타일 i 로 가는 공전은 축이 타일 i-1 이므로, 그 타일의 배속과 회전방향을 따른다.
 		var mult := speed_mult_at(chart, i - 1)
-		out[i] = out[i - 1] + beats_to_reach(chart.angles, i) * spb / mult
+		var spin := spin_at(chart, i - 1)
+		out[i] = out[i - 1] + beats_to_reach(chart.angles, i, spin) * spb / mult
 	return out
 
 
@@ -133,9 +152,10 @@ static func orbit_start_deg(angles: PackedFloat32Array, i: int) -> float:
 	return normalize360(incoming_deg(angles, i) + 180.0)
 
 
-## 타일 i 로 가는 공전의 스윕각(도). 대기 박자와 같은 양을 도 단위로 준다.
-static func orbit_sweep_deg(angles: PackedFloat32Array, i: int) -> float:
-	return beats_to_reach(angles, i) * 180.0
+## 타일 i 로 가는 공전의 스윕각(도). 부호가 회전 방향이다.
+## CW(twirl) 이면 음수 — 렌더가 반대로 돌아야 착지가 맞는다.
+static func orbit_sweep_deg(angles: PackedFloat32Array, i: int, spin: int = 1) -> float:
+	return beats_to_reach(angles, i, spin) * 180.0 * (1.0 if spin >= 0 else -1.0)
 
 
 ## 공전이 끝나는 각도. 정의상 반드시 angles[i-1] 이어야 하고,
