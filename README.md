@@ -222,6 +222,9 @@ godot --headless --audio-driver CoreAudio res://tests/SmokeScene.tscn -- --autop
 # 일부러 놓치기 — 콤보 끊김과 흔들림 발동 검증
 godot --headless --audio-driver CoreAudio res://tests/SmokeScene.tscn -- --autoplay --miss-every=5
 
+# 조작 표면 — 등급 매핑 · echo 필터 · R 재시작 · 워밍업/종료 후 입력
+godot --headless --audio-driver CoreAudio res://tests/InputScene.tscn
+
 # 오디오 클럭 실측 (드리프트·지터·3항vs1항)
 godot --headless --audio-driver CoreAudio --script res://tests/probe_clock.gd
 
@@ -530,3 +533,31 @@ twirl(회전방향 반전)을 거는 게 정확히 이것 때문이다 — twirl
 
 측정에 영향이 없는지 확인했다: 지터 1.14ms(소리 켜짐) vs 0.95ms(음소거) —
 실행 간 편차(0.78~1.14ms) 안이다.
+
+---
+
+## 조작 표면 테스트
+
+`tests/InputScene.tscn` — 자동플레이가 못 보는 것을 본다.
+
+자동플레이는 **정확한 시각에만** 누르므로 판정 체인이 자기일관적이라는 것까지만 안다.
+다음은 실제 입력 경로를 타야만 검증된다:
+
+| 검사 | 내용 |
+|---|---|
+| 등급 매핑 | +45ms → LATE PERFECT · −45 → EARLY PERFECT · ±85 → LATE!/EARLY! · 0 → PERFECT |
+| 무입력 | 감시자가 TOO_LATE 를 낸다 |
+| 키 리피트 | 같은 프레임에 echo 3회를 보내도 타일이 1칸만 전진 |
+| 워밍업 중 입력 | 무시되고 산포 표본을 오염시키지 않는다 |
+| 곡 종료 후 입력 | 5회 눌러도 크래시 없음 |
+| R 재시작 | idx·finished·점수 초기화, **산포 표본은 유지**, 클럭 카운터 리셋 |
+
+### 발견: 입력 경로에 +11ms 편향이 있다
+
+실측이 전부 + 방향으로 치우친다 — 의도 0ms 가 +8.8\~12.3, −45 가 −33.1, −85 가 −72.3.
+
+그중 ~7ms 는 하네스가 프레임마다 폴링해서 최대 한 프레임 늦게 누르는 탓이고,
+나머지가 엔진 입력 디스패치다. 실제 키보드는 여기에 하드웨어/OS 지연이 더 붙는다.
+
+**캘리브레이션 슬라이더를 + 방향으로 밀어야 한다는 설계 예측과 정확히 맞는다.**
+사람이 칠 때 평균이 얼마나 치우치는지가 다음 측정 대상이다.
