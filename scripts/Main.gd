@@ -86,6 +86,12 @@ func _restart() -> void:
 	_configure_orbit(1)
 	_apply_windows(1)
 	_planets.set_orbit_progress(0.0)
+	# 카메라를 시작 위치에 미리 놓고 스무딩 이력을 지운다.
+	# 안 하면 워밍업 동안 (0,0) 에 있다가 warm 되는 첫 프레임에
+	# 미드포인트로 48px(반지름의 절반) 순간이동한다.
+	_camera.position = _planets.midpoint()
+	_camera.offset = Vector2.ZERO
+	_camera.reset_smoothing()
 	AudioClock.start(chart.audio)
 
 
@@ -163,9 +169,13 @@ func _process(delta: float) -> void:
 	_last_u = u
 	_planets.set_orbit_progress(u)
 
-	# 카메라도 같은 t 에서 파생한다. 별도 트윈을 두면 그게 또 하나의 시간축이 된다.
-	var base := _positions[vi - 1].lerp(_positions[vi], u)
-	_camera.position = base + _shake_offset()
+	# 카메라는 두 행성의 중점을 따라간다. 타일 사이 직선 lerp 는
+	# 타일이 바뀔 때마다 진행 방향이 불연속으로 꺾여서 뚝뚝 끊겨 보인다.
+	# 흔들림은 position 이 아니라 offset 으로 준다 —
+	# position 에 실으면 Camera2D 의 position_smoothing 이 흔들림을 뭉개서
+	# '흔들림'이 아니라 '느린 표류'가 된다.
+	_camera.position = _planets.midpoint()
+	_camera.offset = _shake_offset()
 
 	_update_hud(t)
 

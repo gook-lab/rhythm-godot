@@ -96,7 +96,17 @@ def fmt(x):
     return "%g" % x
 
 
-def write_tres(name, title, bpm, hops_wanted, start_offset_ms=0.0):
+# 카운트인(박). 첫 타일 앞에 두는 여유다.
+# 얼불춤도 countdownTicks 로 4박을 센다. 두 가지 이유로 필요하다:
+#   1. 음악적 — 플레이어가 박자를 잡을 시간이 있어야 한다.
+#   2. 기술적 — AudioClock 워밍업(기본 100ms) 동안 렌더가 멈춰 있는데,
+#      첫 타일이 0ms 에 있으면 warm 되는 순간 그만큼 건너뛰어 카메라가 32px 튄다.
+LEAD_IN_BEATS = 4.0
+
+
+def write_tres(name, title, bpm, hops_wanted, start_offset_ms=None):
+    if start_offset_ms is None:
+        start_offset_ms = LEAD_IN_BEATS * 60000.0 / bpm
     ang = angles_from_hops(hops_wanted)
     hops, worst = verify(ang, hops_wanted)
     total = sum(hops)
@@ -112,8 +122,9 @@ def write_tres(name, title, bpm, hops_wanted, start_offset_ms=0.0):
         f.write("start_offset_ms = %s\n" % fmt(float(start_offset_ms)))
         f.write('audio = ExtResource("2_audio")\n')
         f.write('title = "%s"\n' % title)
-    print("%-20s 타일 %3d · %6.1f박 · %5.1fs · 착지오차 %.5fpx"
-          % (name + ".tres", len(ang), total, total * 60.0 / bpm, worst))
+    print("%-20s 타일 %3d · %6.1f박 · %5.1fs · 카운트인 %.0fms · 착지오차 %.5fpx"
+          % (name + ".tres", len(ang), total, total * 60.0 / bpm,
+             start_offset_ms, worst))
     print("%-20s 홉: %s%s" % ("", [round(h, 3) for h in hops[:12]],
                               " ..." if len(hops) > 12 else ""))
     return ang
