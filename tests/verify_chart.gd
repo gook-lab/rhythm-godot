@@ -38,8 +38,19 @@ func _init() -> void:
 		return
 	var expected: Array = JSON.parse_string(f.get_as_text())["hit_times_ms"]
 
-	var got := ChartRuntime.hit_times_ms(chart)
-	print("차트 %s · 타일 %d · 정답 %d" % [chart_path, got.size(), expected.size()])
+	# 정답(expected.json)은 '밟는' 타일의 벽시계만 담는다. 고스트(자동 통과)는
+	# 시간 누적에는 기여하지만 판정 대상이 아니므로 비교에서 뺀다 —
+	# 서브홉의 합이 원래 홉이라는 것 자체가 이 비교로 검증된다.
+	var all_times := ChartRuntime.hit_times_ms(chart)
+	var ghost := {}
+	for g in chart.ghost_tiles:
+		ghost[int(g)] = true
+	var got := PackedFloat32Array()
+	for i in range(all_times.size()):
+		if not ghost.has(i):
+			got.append(all_times[i])
+	print("차트 %s · 타일 %d (고스트 %d 제외) · 정답 %d"
+		% [chart_path, all_times.size(), ghost.size(), expected.size()])
 
 	var fails := 0
 	if got.size() != expected.size():

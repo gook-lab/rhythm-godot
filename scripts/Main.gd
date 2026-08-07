@@ -73,6 +73,10 @@ const COUNTDOWN_BEATS := 4
 
 var _hit_times := PackedFloat32Array()
 var _positions := PackedVector2Array()
+## 고스트(자동 통과) 타일 집합. 판정 커서가 여기엔 절대 머물지 않는다.
+var _ghosts := {}
+## 판정 대상 타일 수 (고스트 제외). HUD 의 '타일 x / y' 분모.
+var _judged_total := 0
 ## 판정 커서 — 입력 또는 미스 기한으로 전진한다. 0 은 출발점이라 1 에서 시작.
 var _idx := 1
 
@@ -116,6 +120,9 @@ func _ready() -> void:
 
 	_hit_times = ChartRuntime.hit_times_ms(chart)
 	_positions = ChartRuntime.tile_positions(chart.angles, TILE_SPACING)
+	for g in chart.ghost_tiles:
+		_ghosts[int(g)] = true
+	_judged_total = _hit_times.size() - 1 - _ghosts.size()
 	_song_len_ms = chart.audio.get_length() * 1000.0
 	_draw_path()
 
@@ -139,7 +146,7 @@ func _restart() -> void:
 	_paused = false
 	AudioClock.set_paused(false)
 	_pause_panel.visible = false
-	_idx = 1
+	_idx = _next_judged(1)
 	_vis = 1
 	_finished = false
 	_shake = 0.0
@@ -154,7 +161,7 @@ func _restart() -> void:
 	_verdict_label.text = ""
 	_combo_label.text = ""
 	_configure_orbit(1)
-	_apply_windows(1)
+	_apply_windows(_idx)
 	_planets.set_orbit_progress(0.0)
 	# 카메라를 시작 위치에 미리 놓고 스무딩 이력을 지운다.
 	# 안 하면 워밍업 동안 (0,0) 에 있다가 warm 되는 첫 프레임에
@@ -191,16 +198,31 @@ func _apply_windows(i: int) -> void:
 	_timing_bar.set_windows(_judge.perfect_ms, _judge.very_ms, _judge.miss_ms)
 
 
+## 판정창 캡은 '판정되는 이웃'까지의 거리여야 한다. 고스트는 밟지 않으므로
+## 고스트까지의 간격으로 캡하면 창이 이유 없이 절반으로 좁아진다.
 func _gap_before(i: int) -> float:
 	if i <= 0 or i >= _hit_times.size():
 		return INF
-	return _hit_times[i] - _hit_times[i - 1]
+	var j := i - 1
+	while j > 0 and _ghosts.has(j):
+		j -= 1
+	return _hit_times[i] - _hit_times[j]
 
 
 func _gap_after(i: int) -> float:
-	if i + 1 >= _hit_times.size():
+	var j := i + 1
+	while j < _hit_times.size() and _ghosts.has(j):
+		j += 1
+	if i >= _hit_times.size() or j >= _hit_times.size():
 		return INF
-	return _hit_times[i + 1] - _hit_times[i]
+	return _hit_times[j] - _hit_times[i]
+
+
+## i 이상에서 첫 판정 대상(비고스트) 타일.
+func _next_judged(i: int) -> int:
+	while i < _hit_times.size() and _ghosts.has(i):
+		i += 1
+	return i
 
 
 # ------------------------------------------------------------------ 감시자
@@ -338,8 +360,9 @@ func _input(event: InputEvent) -> void:
 
 
 ## 판정 커서만 전진시킨다. 행성 역할 교체와 공전 재설정은 렌더 커서가 한다.
+## 고스트 타일은 판정이 없으므로 건너뛴다 — 커서는 항상 다음 '밟을' 타일을 본다.
 func _advance() -> void:
-	_idx += 1
+	_idx = _next_judged(_idx + 1)
 	_apply_windows(_idx)
 
 
@@ -420,7 +443,7 @@ func _on_song_finished(failed := false) -> void:
 			_score.count_of(Judge.Verdict.VERY_LATE),
 			_score.count_of(Judge.Verdict.TOO_LATE)]
 		+ "최대 콤보 %d    ·    타일 %d / %d\n" % [
-			_score.max_combo, _score.total, _hit_times.size() - 1]
+			_score.max_combo, _score.total, _judged_total]
 		+ "판정 오차 평균 %+.1fms   표준편차 %.1fms" % [s.mean, s.sd]
 	)
 	_result.visible = true
@@ -475,17 +498,18 @@ func _update_hud(t: float) -> void:
 	# 판정창이 왜 좁아져야 하는지를 화면에서 바로 보여준다.
 	# 타일 BPM 은 속도 타일(토끼/달팽이)이 적용된 '실효' 값이다.
 	# 체감 BPM = 실효 BPM / 현재 홉 박자 — 1/6박 홉을 340 으로 밟으면 2040 이 된다.
-	var hop := ChartRuntime.beats_to_reach(chart.angles, _idx,
-		ChartRuntime.spin_at(chart, maxi(_idx - 1, 0)))
+	# 체감 BPM 은 '탭 간격' 기준이다. 고스트가 끼면 홉 박자(1박)와 탭 간격(2박)이
+	# 갈라지므로, 홉이 아니라 직전 판정 타일까지의 실제 벽시계 간격으로 잰다.
 	var ebpm := ChartRuntime.effective_bpm_at(chart, maxi(_idx - 1, 0))
-	var felt := ebpm / hop if hop > 0.0 else ebpm
+	var gap := _gap_before(_idx)
+	var felt := 60000.0 / gap if is_finite(gap) and gap > 0.0 else ebpm
 	var mult := ChartRuntime.speed_mult_at(chart, maxi(_idx - 1, 0))
 	var tag := ""
 	if not is_equal_approx(mult, 1.0):
 		tag = "  %s x%g" % ["토끼" if mult > 1.0 else "달팽이", mult]
 	_hud_info.text = "음악 %s / %s\n타일 BPM %.0f%s   체감 BPM %.0f\n타일 %d / %d" % [
 		_fmt_time(t), _fmt_time(_song_len_ms), ebpm, tag, felt,
-		_idx, _hit_times.size() - 1]
+		_score.total, _judged_total]
 
 	var s := _score.delta_stats()
 	_timing_label.text = "판정창 ±%.0fms (Perfect ±%.0f)   표본 %d   평균 %+.1f   σ %.1f" % [

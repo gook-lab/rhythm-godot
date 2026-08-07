@@ -34,6 +34,12 @@ const EDGE_PASSED := Color(0.30, 0.36, 0.53, 0.5)
 const EDGE_UPCOMING := Color(0.86, 1.01, 1.42)     # 1.90 -> 1.42
 const EDGE_TARGET := Color(1.65, 1.50, 0.82)       # 2.20 -> 1.65
 
+## 고스트(자동 통과) 타일 — '밟지 않는 길'로 읽혀야 한다.
+## 크기를 절반으로 줄이고 채우기 없이 흐린 윤곽만 그린다.
+## 글로우(>1.0)를 주지 않는다 — 빛나는 건 전부 '칠 것'이라는 규약을 지킨다.
+const EDGE_GHOST := Color(0.50, 0.62, 0.90, 0.38)
+const GHOST_SCALE := 0.52
+
 var _positions: PackedVector2Array
 var _angles: PackedFloat32Array
 var _side := 96.0
@@ -42,6 +48,7 @@ var _side := 96.0
 ## 별도 노드로 그리면 타일이 떨어져 나간 뒤에도 마커가 허공에 남는다(실제로 그랬다).
 ## 타일과 같은 함수에서 그리면 낙하·회전·페이드를 공짜로 따라간다.
 var _twirl_set := {}
+var _ghost_set := {}
 var _speed_at := {}     # tile -> [배율, 빨라짐 여부]
 var _cursor := 1        # 지금 밟아야 할 타일
 var _last_cursor := -1
@@ -68,10 +75,13 @@ func setup(positions: PackedVector2Array, angles: PackedFloat32Array, side: floa
 	_side = side
 	_last_cursor = -1
 	_twirl_set.clear()
+	_ghost_set.clear()
 	_speed_at.clear()
 	if chart != null:
 		for t in chart.twirl_tiles:
 			_twirl_set[int(t)] = ChartRuntime.spin_at(chart, int(t))
+		for g in chart.ghost_tiles:
+			_ghost_set[int(g)] = true
 		for k in range(chart.speed_changes.size()):
 			var sc := chart.speed_changes[k]
 			var prev := 1.0 if k == 0 else chart.speed_changes[k - 1].y
@@ -166,11 +176,22 @@ func _draw() -> void:
 	# 떨어지는 중인 타일만 그리고, 다 떨어진 것은 아예 안 그린다.
 	for t in _falls:
 		_draw_falling(t, half)
-	for i in range(n - 1, _cursor, -1):
-		_draw_tile(i, half, FILL_UPCOMING, EDGE_UPCOMING, 2.0)
+	# 목표는 '다음에 밟을' 타일이다. 렌더 커서가 고스트 위를 지나는 중이면
+	# 고스트가 아니라 그 너머의 판정 타일이 노랗게 빛나야 한다 —
+	# 고스트가 목표색이 되면 "이걸 치라"는 뜻이 돼 버린다.
+	var target := _cursor
+	while target >= 0 and target < n and _ghost_set.has(target):
+		target += 1
+	for i in range(n - 1, _cursor - 1, -1):
+		if i == target:
+			continue
+		if _ghost_set.has(i):
+			_draw_tile(i, half * GHOST_SCALE, Color.TRANSPARENT, EDGE_GHOST, 1.5)
+		elif i > _cursor:
+			_draw_tile(i, half, FILL_UPCOMING, EDGE_UPCOMING, 2.0)
 	# 목표 타일은 맨 위에, 테두리를 더 굵게
-	if _cursor >= 0 and _cursor < n:
-		_draw_tile(_cursor, half, FILL_TARGET, EDGE_TARGET, 3.5)
+	if _cursor >= 0 and target < n:
+		_draw_tile(target, half, FILL_TARGET, EDGE_TARGET, 3.5)
 
 	# 임팩트는 전부 위에. 부풀었다 가라앉는다.
 	for t in _impacts:
@@ -193,6 +214,8 @@ func _draw() -> void:
 
 ## 지나간 타일이 중력에 떨어지며 회전하고 사라진다.
 func _draw_falling(t: int, half: float) -> void:
+	if _ghost_set.has(t):
+		half *= GHOST_SCALE   # 서 있을 때 작았으니 떨어질 때도 작아야 한다
 	var f: Array = _falls[t]
 	var e: float = f[0]
 	var k: float = clampf(1.0 - e / FALL_SEC, 0.0, 1.0)   # 1 -> 0

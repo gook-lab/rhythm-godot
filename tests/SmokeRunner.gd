@@ -154,7 +154,8 @@ func _finish(reached_end: bool, wall: float) -> void:
 	set_process(false)
 	var score: Score = _main.get_node("Score")
 	var chart: Chart = _main.get("chart")
-	var n := chart.angles.size() - 1
+	# 고스트(자동 통과) 타일은 판정이 없다 — 완주 기대치에서 뺀다.
+	var n := chart.angles.size() - 1 - chart.ghost_tiles.size()
 	print("\n결과")
 	print("  %.1fs · %d 프레임 (%.0f fps)" % [wall, _frames, _frames / maxf(wall, 0.001)])
 	print("  도달 타일 %d / %d · 판정 %d 건 · 입력 %d 회" % [_max_idx, n, score.total, _pressed])

@@ -37,6 +37,16 @@ extends Resource
 ## 실제 얼불춤 채보가 타일의 25% 에 twirl 을 거는 이유가 이것이다.
 @export var twirl_tiles: PackedInt32Array = PackedInt32Array()
 
+## 고스트(자동 통과) 타일. 행성은 지나가지만 밟지 않는다 — 판정 대상이 아니다.
+##
+## 왜 필요한가: 2박 대기는 스윕이 정확히 360도라 기하적으로 '항상 U턴'이다
+## (나갈 방향 ≡ 들어온 방향 + 180, 회전 방향과 무관 — twirl 로도 못 바꾼다).
+## 채움 타일이 2박 걸음으로 이어지면 경로가 두 지점을 왕복하며 같은 자리에
+## 수십 장씩 쌓인다. 2박을 1박+1박으로 쪼개고 중간 타일을 고스트로 두면
+## 같은 리듬이 직선 걸음이 된다 — 탭 리듬은 그대로, 기하만 풀린다.
+## 고스트는 손이 아니라 눈을 위한 타일이다.
+@export var ghost_tiles: PackedInt32Array = PackedInt32Array()
+
 @export var title: String = ""
 
 
