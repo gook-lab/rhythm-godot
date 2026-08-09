@@ -47,6 +47,15 @@ extends Resource
 ## 고스트는 손이 아니라 눈을 위한 타일이다.
 @export var ghost_tiles: PackedInt32Array = PackedInt32Array()
 
+## 토끼/달팽이 마커를 '표시할' 속도 타일. 배속 자체는 speed_changes 가 전부다.
+##
+## 왜 나눴나: 원곡 오디오 채보는 타일 벽시계를 원시 전사 맵에 맞추기 위해
+## 홉마다 미세 배율(전사 잡음 ±7%)이 붙는다. 그건 기계적 보정이지 플레이어가
+## 반응할 '속도 변경'이 아니다 — 전부 마커로 그리면 토끼가 화면을 뒤덮는다.
+## 비어 있으면 speed_changes 전부를 표시한다(구버전 채보 호환).
+## [-1] 하나만 있으면 '표시할 것 없음'의 명시다(빈 배열과 구분).
+@export var speed_display: PackedInt32Array = PackedInt32Array()
+
 @export var title: String = ""
 
 

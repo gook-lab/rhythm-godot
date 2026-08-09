@@ -566,9 +566,12 @@ func _update_hud(t: float) -> void:
 	var felt := 60000.0 / gap if is_finite(gap) and gap > 0.0 else ebpm
 	var mult := ChartRuntime.speed_mult_at(chart, maxi(_idx - 1, 0))
 	var tag := ""
-	if not is_equal_approx(mult, 1.0):
+	# 원곡 오디오 채보(speed_display 있음)는 홉 배율에 전사 잡음 ±7% 가 섞인다.
+	# 태그는 기준 대비 10% 넘게 벗어난 '의도된 구간'에서만 단다 — 잡음에는 침묵.
+	var tag_gate := 1e-6 if chart.speed_display.is_empty() else 0.10
+	if absf(mult - 1.0) > tag_gate:
 		# %g 는 GDScript 포맷에 없다 (TilePath._draw_markers 의 주석 참고)
-		tag = "  %s x%s" % ["토끼" if mult > 1.0 else "달팽이", String.num(mult)]
+		tag = "  %s x%s" % ["토끼" if mult > 1.0 else "달팽이", String.num(mult, 2)]
 	_hud_info.text = "음악 %s / %s\n타일 BPM %.0f%s   체감 BPM %.0f\n타일 %d / %d" % [
 		_fmt_time(t), _fmt_time(_song_len_ms), ebpm, tag, felt,
 		_score.total, _judged_total]

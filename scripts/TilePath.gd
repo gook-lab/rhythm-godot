@@ -82,9 +82,18 @@ func setup(positions: PackedVector2Array, angles: PackedFloat32Array, side: floa
 			_twirl_set[int(t)] = ChartRuntime.spin_at(chart, int(t))
 		for g in chart.ghost_tiles:
 			_ghost_set[int(g)] = true
+		# speed_display 가 있으면 그 타일만 마커를 받는다 — 원곡 오디오 채보의
+		# 홉 단위 보정 배율(잡음)은 배속으로는 살아 있되 눈에는 안 보인다.
+		var show := {}
+		for t in chart.speed_display:
+			if int(t) >= 0:
+				show[int(t)] = true
+		var filter := chart.speed_display.size() > 0
 		for k in range(chart.speed_changes.size()):
 			var sc := chart.speed_changes[k]
 			var prev := 1.0 if k == 0 else chart.speed_changes[k - 1].y
+			if filter and not show.has(int(sc.x)):
+				continue
 			if sc.y > 0.0 and not is_equal_approx(sc.y, prev):
 				_speed_at[int(sc.x)] = [sc.y, sc.y > prev]
 	queue_redraw()
