@@ -18,7 +18,7 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from midilib import parse_smf, TempoMap, dejitter_tempos
+from midilib import parse_smf, TempoMap, dejitter_tempos, resample_tempos_at_tiles
 
 FAIL = 0
 
@@ -126,6 +126,22 @@ def main():
     clean4, _ = dejitter_tempos(tail, 40.0)
     ok(abs(clean4[0][1] - 128.0) < 1e-6,
        "끝박 뒤 이벤트가 템포를 밀지 않는다 — %.4f" % clean4[0][1])
+
+    print("타일 해상도 리샘플 (원곡 오디오 경로)")
+    # 잡음 맵을 타일 경계로 리샘플하면: 경계는 전부 타일 위,
+    # 타일의 벽시계는 원시 맵과 정확히 같아야 한다 — 이게 원곡 정렬의 근거다.
+    tiles = [4.0, 5.5, 8.0, 12.0, 20.0]
+    rs = resample_tempos_at_tiles(jit, tiles, 64.0)
+    tm_raw, tm_rs = TempoMap(jit), TempoMap(rs)
+    worst = max(abs(tm_raw.sec_at(t) - tm_rs.sec_at(t)) for t in tiles)
+    ok(worst < 1e-9, "타일 벽시계 보존 — 최대 오차 %.2e s" % worst)
+    bset = {b for b, _ in rs}
+    ok(all(t in bset for t in tiles), "경계가 전부 타일 위")
+    ok(abs(tm_raw.sec_at(64.0) - tm_rs.sec_at(64.0)) < 1e-9, "꼬리 구간까지 총 길이 보존")
+    # 진짜 변경(2배)이 홉 중간에 있어도 타일 벽시계는 여전히 원시 맵과 같다.
+    rs2 = resample_tempos_at_tiles(real, [4.0, 12.0], 16.0)
+    ok(abs(TempoMap(rs2).sec_at(12.0) - TempoMap(real).sec_at(12.0)) < 1e-12,
+       "홉 중간 변경도 타일 시각 보존")
 
     print("PASS" if FAIL == 0 else "FAILED %d" % FAIL)
     sys.exit(FAIL)

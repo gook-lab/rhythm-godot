@@ -244,6 +244,39 @@ def dejitter_tempos(entries, end_beat, tol=0.10):
     return out, drift
 
 
+def resample_tempos_at_tiles(entries, tiles, end_beat):
+    """템포 맵을 '타일 경계' 해상도로 리샘플한다. 소구간마다 시간 보존.
+
+    왜 필요한가 (원곡 오디오 채택 경로):
+    dejitter 는 채보를 깨끗하게 하는 대신 원시 맵에서 벽시계가 떠내려간다
+    (실측 mureka_09: 최대 92.2ms, 곡내 방황 -21~-69ms). 오디오를 MIDI 에서
+    렌더할 때는 같은 맵을 쓰므로 문제가 없지만, '원곡'을 트는 순간 그 드리프트가
+    통째로 판정 오차가 된다. 반대로 원시 맵을 그대로 쓰면 이벤트마다
+    (mureka 실측 501개, 20ms 격자 잡음) 속도 타일이 박힌다.
+
+    해법: 경계를 '타일 위'에만 두고, 각 홉의 bpm 을 그 구간의 시간이 원시 맵과
+    정확히 같도록 적합한다.
+      - 경계 = 타일이므로 '속도 변경은 타일 위' 불변식이 구성적으로 성립
+      - 타일의 벽시계 = 원시 맵의 벽시계 (오차 0) — 원곡과의 정렬이 보존된다
+      - 홉 안쪽의 편차만 남는데, 그건 판정 시각이 아니다
+
+    entries: 원시 [(beat,bpm)] · tiles: 타일 박(오름차순) · end_beat: 곡 끝.
+    반환: [(beat, bpm)] — 경계는 0.0, 각 타일, 그 뒤 꼬리 구간.
+    """
+    tm = TempoMap(entries)
+    bounds = [0.0] + [t for t in tiles if t > 1e-12]
+    if end_beat > bounds[-1] + 1e-9:
+        bounds.append(end_beat)
+    out = []
+    for a, b in zip(bounds, bounds[1:]):
+        dt = tm.sec_at(b) - tm.sec_at(a)
+        bpm = (b - a) * 60.0 / dt if dt > 0 else tm.bpm_at(a)
+        out.append((a, bpm))
+    if not out:
+        out = [(0.0, tm.bpm_at(0.0))]
+    return out
+
+
 # ---------------------------------------------------------------- 라이터 (픽스처용)
 def _varint(v):
     out = [v & 0x7F]
