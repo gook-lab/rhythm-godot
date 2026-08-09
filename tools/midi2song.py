@@ -35,6 +35,7 @@ MIDI 내보내기는 보통 후자다(bass/drums/guitar/piano/synth/vocal, PPQ �
   - GDScript(tests/verify_chart.gd): 실제 엔진 ChartRuntime.hit_times_ms 와 대조
 """
 import argparse
+import bisect
 import json
 import math
 import os
@@ -45,7 +46,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "tools"))
 
 from midilib import parse_smf, TempoMap, dejitter_tempos
-from make_song import square, triangle, midi_hz, noise, normalize
+from make_song import square, triangle, midi_hz, noise, loudness_normalize
 from make_click import write_wav
 import make_charts
 
@@ -184,6 +185,154 @@ TIGHT_MS = 120.0    # 이보다 촘촘하면 판정창(±110ms)이 이웃과 붙
 IDEAL_RATE = 1.5    # 초당 타일 수의 이상점. 얼불춤 체감 밀도가 대략 이 근처다
 
 
+# ---------------------------------------------------------------- 밀도 보강
+# 멜로디 한 성부만 채보로 쓰면 그 성부가 쉬는 동안 채보도 쉰다.
+# 실측(2026-08-07, 17곡): 초당 1.43~3.16탭, 그중 mureka_07 은 홉의 67%가
+# '2박 걸음 채움'이었다 — 841ms 에 한 번씩, 그것도 음악에 없는 자리를 밟는다.
+# 채보가 심심한 게 아니라 곡의 2/3이 비어 있었던 것이다.
+#
+# 얼불춤 창작마당 채보는 한 성부만 따라가지 않는다. 보컬이 쉬면 드럼을,
+# 드럼이 빠지면 신스를 밟는다 — '지금 들리는 것' 위에 타일이 있다.
+# 그래서 공백을 메트로놈 걸음이 아니라 '실제 반주 온셋'으로 채운다.
+#
+# 층은 리듬적 현저성 순이다. 위 층으로 공백이 메워지면 아래 층은 안 쓴다 —
+# 조용한 구간은 킥만, 꽉 찬 구간은 킥+베이스가 자연히 얹힌다.
+BACKBEAT_PITCHES = (35, 36, 38, 40)   # 킥(35,36) · 스네어(38,40)
+
+## 천장은 '박', 바닥은 'ms' 다 — 둘의 단위가 다른 게 핵심이다.
+##
+## 천장(FILL_ABOVE_BEATS): 심심함은 음악적 개념이다. 채보를 짜는 사람은
+##   "한 박 넘게 비면 뭐라도 밟게 한다"고 생각하지 "340ms 넘으면"이라고
+##   생각하지 않는다. 박으로 두면 느린 곡·빠른 곡이 알아서 같은 '음악적' 밀도가 된다.
+## 바닥(MIN_ADD_GAP_MS): 못 치는 건 물리적 개념이다. 손가락과 판정창은
+##   BPM 을 모른다. 130ms 면 판정창이 ±58ms 로 눌리는데(Judge.set_gaps),
+##   실측 사람 산포가 20~30ms 라 아직 여유가 있다.
+## 실측(2026-08-07, 14곡)으로 고른 값이다. 천장 1박 / 바닥 150ms 에서
+## 보강이 만드는 '촘촘한 자리(<150ms)' 개수가 멜로디가 원래 가진 개수와
+## 같아진다 — 즉 밀도는 두 배가 되는데 난이도의 하한은 안 건드린다.
+## 바닥을 130 으로 낮추면 그 수가 3~5배로 튄다(mureka_09: 64 -> 296).
+FILL_ABOVE_BEATS = 1.0
+MIN_ADD_GAP_MS = 150.0
+
+## 곡에 원래 있어도 참아주는 최소 간격. 이보다 좁으면 판정창이 ±45ms 밑으로
+## 눌려(Judge.set_gaps) 둘 다 치는 게 불가능해진다 — 뒤엣것은 확정 미스다.
+## MIN_ADD_GAP_MS 와 값이 다른 게 맞다: 저건 '새로 놓아도 되는 간격'이라
+## 보수적이어야 하고, 이건 '지워버릴 간격'이라 관대해야 한다.
+FLOOR_MS = 100.0
+
+
+def support_layers(tracks, mel_i):
+    """멜로디 외 트랙 -> 우선순위대로 정렬된 채움 후보 층 [(이름, 온셋들)]."""
+    back, hats, bass, other = set(), set(), set(), set()
+    for i, tr in enumerate(tracks):
+        if i == mel_i:
+            continue
+        is_bass = "bass" in tr["label"].lower()
+        for b, _d, p, _v in tr["notes"]:
+            if tr["drums"]:
+                (back if p in BACKBEAT_PITCHES else hats).add(b)
+            elif is_bass:
+                bass.add(b)
+            else:
+                other.add(b)
+    return [("드럼 백비트", sorted(back)), ("베이스", sorted(bass)),
+            ("그 외 성부", sorted(other)), ("하이햇", sorted(hats))]
+
+
+def enrich_onsets(onsets, layers, tmap, fill_above_beats, min_gap_ms, verbose=True):
+    """공백에 반주 온셋을 얹는다. 층을 순서대로 훑되 이미 메워진 공백은 건너뛴다.
+
+    후보는 전부 이미 1/12 격자 위에 있다(전 트랙을 같은 격자로 스냅했으므로).
+    따라서 격자·양자화 불변식은 여기서 깨질 수 없다.
+    """
+    # sec_at 은 템포 항목 수에 선형이라 수천 번 부르면 느리다. 격자 칸으로 메모한다.
+    memo = {}
+
+    def sec(beat):
+        k = round(beat * GRID)
+        if k not in memo:
+            memo[k] = tmap.sec_at(beat)
+        return memo[k]
+
+    cur = list(onsets)
+    for label, pool in layers:
+        if not pool:
+            continue
+        added = []
+        for k in range(len(cur) - 1):
+            a, b = cur[k], cur[k + 1]
+            if b - a <= fill_above_beats + 1e-9:
+                continue
+            lo = bisect.bisect_right(pool, a)
+            hi = bisect.bisect_left(pool, b)
+            last = a
+            for c in pool[lo:hi]:
+                if (sec(c) - sec(last)) * 1000.0 < min_gap_ms:
+                    continue
+                if (sec(b) - sec(c)) * 1000.0 < min_gap_ms:
+                    continue
+                added.append(c)
+                last = c
+        if added:
+            cur = sorted(set(cur) | set(added))
+            if verbose:
+                print("    +%-10s 타일 %d개" % (label, len(added)))
+    return cur
+
+
+def drop_unhittable(onsets, protect, tmap, floor_ms, verbose=True):
+    """물리적으로 칠 수 없는 간격을 없앤다. 전사 잡음 청소다.
+
+    실측(2026-08-07): 전사 멜로디에 1/12박 간격으로 붙은 온셋 쌍이 있고,
+    300~375bpm 구간이면 그게 17~33ms 다. 판정창은 이웃까지 거리의 45%로
+    눌리므로(Judge.set_gaps) 17ms 간격이면 창이 ±7ms — 둘 다 치는 건 불가능하고
+    뒤엣것은 확정 미스다. 난이도가 아니라 결함이다.
+
+    보강 타일의 바닥(min_gap_ms)과 다른 값인 게 맞다. 저건 '우리가 새로
+    놓아도 되는 최소 간격'이라 보수적이어야 하고, 이건 '곡에 원래 있어도
+    참아주는 최소 간격'이라 관대해야 한다. 빠른 구간을 통째로 지우면 안 된다.
+
+    protect 에 든 격자 칸(속도 변경 타일)은 절대 안 버린다 — 그 타일이 없으면
+    그 구간의 배속이 통째로 틀리기 때문이다. 대신 그 옆엣것을 버린다.
+    """
+    memo = {}
+
+    def sec(beat):
+        k = round(beat * GRID)
+        if k not in memo:
+            memo[k] = tmap.sec_at(beat)
+        return memo[k]
+
+    def is_protected(o):
+        return round(o * GRID) in protect
+
+    kept = [onsets[0]]
+    dropped = []
+    stuck = 0
+    for o in onsets[1:]:
+        if (sec(o) - sec(kept[-1])) * 1000.0 >= floor_ms:
+            kept.append(o)
+            continue
+        # 너무 붙었다. 하나는 버려야 한다.
+        if is_protected(o) and not is_protected(kept[-1]) and (
+                len(kept) == 1
+                or (sec(o) - sec(kept[-2])) * 1000.0 >= floor_ms):
+            dropped.append(kept[-1])   # 속도 타일이 이긴다
+            kept[-1] = o
+        elif is_protected(o) and is_protected(kept[-1]):
+            kept.append(o)             # 둘 다 못 버린다 — 어쩔 수 없다
+            stuck += 1
+        else:
+            dropped.append(o)
+    if verbose and dropped:
+        print("  못 치는 타일 정리: %d개 제거 (간격 < %.0fms · 전사 잡음)"
+              % (len(dropped), floor_ms))
+    if verbose and stuck:
+        print("     !! 속도 타일끼리 %.0fms 안에 붙은 곳 %d군데 — 버릴 수 없다"
+              % (floor_ms, stuck))
+    return kept
+
+
 def dominant_bpm(tempos, lo_beat, hi_beat):
     """채보 구간에서 '가장 오래 유지되는' 템포. Chart.bpm 의 기준이 된다.
 
@@ -285,6 +434,8 @@ def replay_hit_times_from_tres(tres_path):
     so = float(re.search(r"start_offset_ms = ([\d.eE+-]+)", t).group(1))
     m = re.search(r"twirl_tiles = PackedInt32Array\(([^)]*)\)", t)
     twirls = [int(x) for x in m.group(1).split(",")] if m else []
+    m = re.search(r"ghost_tiles = PackedInt32Array\(([^)]*)\)", t)
+    ghosts = set(int(x) for x in m.group(1).split(",")) if m else set()
     m = re.search(r"speed_changes = PackedVector2Array\(([^)]*)\)", t)
     sc = []
     if m:
@@ -303,7 +454,9 @@ def replay_hit_times_from_tres(tres_path):
     spb = 60000.0 / bpm
     for i in range(1, len(ang)):
         out.append(out[-1] + hops[i - 1] * spb / mult_at(i - 1))
-    return out
+    # 고스트(자동 통과) 타일은 밟지 않으므로 정답(온셋 벽시계)과의 비교에서 뺀다.
+    # 시간 누적에는 위에서 이미 기여했다 — 서브홉의 합이 원래 홉이다.
+    return [v for i, v in enumerate(out) if i not in ghosts]
 
 
 def main():
@@ -319,6 +472,15 @@ def main():
     ap.add_argument("--tempo-tol", type=float, default=0.10,
                     help="이 비율 안쪽의 템포 변화는 측정 잡음으로 보고 합친다 "
                          "(전사 MIDI 대응, 0 이면 원본 템포맵 그대로)")
+    ap.add_argument("--fill-above-beats", type=float, default=FILL_ABOVE_BEATS,
+                    help="이보다 긴 공백(박)은 반주(드럼·베이스·기타 성부) 온셋으로 "
+                         "채운다. 0 이면 멜로디만 쓴다 (기본 %g)" % FILL_ABOVE_BEATS)
+    ap.add_argument("--min-gap-ms", type=float, default=MIN_ADD_GAP_MS,
+                    help="보강 타일이 만들 수 있는 최소 간격. 판정창이 이웃에 "
+                         "닿지 않는 하한이다 (기본 %.0f)" % MIN_ADD_GAP_MS)
+    ap.add_argument("--floor-ms", type=float, default=FLOOR_MS,
+                    help="이보다 좁은 간격은 뒤 타일을 버려서 없앤다(전사 잡음 "
+                         "청소). 0 이면 원본 그대로 (기본 %.0f)" % FLOOR_MS)
     args = ap.parse_args()
 
     name = args.name or os.path.splitext(os.path.basename(args.midi[0]))[0]
@@ -360,8 +522,22 @@ def main():
 
     # ── 카운트인 시프트 (오디오·템포·온셋을 전부 같이 민다) ─────
     shift = max(0.0, LEAD_BEATS - onsets[0])
-    tempos = [(0.0, tempos_clean[0][1])] + [
-        (b + shift, bpm) for b, bpm in tempos_clean if b > 0]
+    # 템포 변경 지점도 1/12 격자 위로 스냅한다. 노트에 한 것과 같은 이유이자
+    # 같은 원칙이다 — 게임은 속도를 '타일 단위'로만 바꿀 수 있고 타일은 격자
+    # 위에만 놓이므로, 격자 밖 변경점은 채보로 표현할 방법이 아예 없다.
+    # 스냅하지 않으면 채보는 반올림한 자리에서, 정답 시각은 원래 자리에서
+    # 속도를 바꿔 그 타일 하나의 홉이 통째로 어긋난다(실측 15.1ms).
+    # 여기서 스냅한 맵으로 오디오까지 렌더하므로 셋(채보·정답·오디오)이 일치한다.
+    snapped = {}
+    for b, bpm in tempos_clean:
+        snapped[0.0 if b <= 0 else q12(b + shift)] = bpm  # 같은 칸이면 뒤가 이긴다
+    tempos = sorted(snapped.items())
+    if tempos[0][0] > 0.0:
+        tempos.insert(0, (0.0, tempos_clean[0][1]))
+    moved = sum(1 for b, _ in tempos_clean if b > 0 and abs(q12(b + shift) - (b + shift)) > 1e-9)
+    if moved:
+        print("  템포 변경점 %d개를 1/12 격자로 스냅 (타일 위에서만 속도가 바뀔 수 있다)"
+              % moved)
     if shift > 0:
         onsets = [q12(o + shift) for o in onsets]
         for tr in tracks:
@@ -377,32 +553,86 @@ def main():
     if onsets[0] > LEAD_BEATS + 1e-9:
         intro_fills = 1  # 실제 개수는 공백 채움 루프가 센다 — 시드만 기록
         onsets.insert(0, LEAD_BEATS)
+
     base_bpm = dominant_bpm(tempos, onsets[0], onsets[-1])
 
     # ── 템포 변경 지점에 타일 강제 삽입 ──────────────────────────
     # 게임은 홉당 상수 배속이라, 변경이 홉 '중간'에 오면 표현이 안 된다.
     # 얼불춤도 속도 타일이 '타일'인 이유가 이것이다.
+    #
+    # 밀도 보강보다 '먼저' 해야 한다. 속도 타일은 위치를 못 옮기지만(옮기면
+    # 그 구간의 배속이 통째로 틀린다) 보강 타일은 얼마든지 안 놓을 수 있다.
+    # 순서가 반대면 보강이 채워 둔 자리 바로 옆(1/12박 = 142bpm에서 35ms)에
+    # 속도 타일이 끼어들어 물리적으로 못 치는 자리가 생긴다 — 실측 15개.
+    # 지금 순서면 보강의 최소 간격 검사가 속도 타일까지 같이 피해 간다.
+    #
+    # 범위는 루프 '전에' 잡아 둔다. 안에서 onsets 에 append 하면 onsets[-1] 이
+    # 방금 넣은 타일로 바뀌어, 그 뒤의 변경점이 전부 `qb < onsets[-1]` 에서
+    # 탈락한다 — 실측(Mureka 7번) 16개 변경점 중 1개만 삽입되고 14개가 조용히
+    # 누락돼 그 타일들의 홉이 통째로 어긋났다(최대 15.1ms).
+    lo, hi = onsets[0], onsets[-1]
+    have = set(round(o * GRID) for o in onsets)   # 격자 칸 번호로 비교한다
     inserted = []
     for beat, _bpm in tempos:
         qb = q12(beat)
-        if onsets[0] < qb < onsets[-1] and not any(abs(o - qb) < 1e-9 for o in onsets):
+        cell = round(qb * GRID)
+        if lo < qb < hi and cell not in have:
+            have.add(cell)
             onsets.append(qb)
             inserted.append(qb)
     onsets.sort()
-    for qb in inserted:
-        print("  속도 타일 삽입: %.4g박 (템포 변경 지점에 노트가 없었다)" % qb)
+    if inserted:
+        print("  속도 타일 삽입 %d개 (템포 변경 지점에 노트가 없었다): %s%s"
+              % (len(inserted), ["%.4g박" % b for b in inserted[:6]],
+                 " ..." if len(inserted) > 6 else ""))
 
-    # ── 2박 초과 공백 채움 ──────────────────────────────────────
+    # ── 밀도 보강: 공백을 반주 온셋으로 채운다 (걸음 타일보다 먼저) ──
+    # 여기서 채워진 자리는 전부 '실제로 소리가 나는' 자리다.
+    # 아래 2박 걸음 채움은 이제 진짜 무음 구간에만 남는다.
+    mel_only = len(onsets)
+    if args.fill_above_beats > 0:
+        print("  밀도 보강 (공백 > %g박 을 반주로 채운다, 최소 간격 %.0fms):"
+              % (args.fill_above_beats, args.min_gap_ms))
+        onsets = enrich_onsets(onsets, support_layers(tracks, mel_i), tmap,
+                               args.fill_above_beats, args.min_gap_ms)
+        print("    타일 %d개 -> %d개 (초당 %.2f -> %.2f탭)"
+              % (mel_only, len(onsets),
+                 mel_only / tmap.sec_at(onsets[-1]),
+                 len(onsets) / tmap.sec_at(onsets[-1])))
+
+    # ── 못 치는 간격 정리 (전사 잡음) ───────────────────────────
+    # 속도가 바뀌는 자리는 전부 보호한다. `inserted`(노트가 없어서 새로 넣은 것)
+    # 만 넘기면 안 된다 — 원래 노트와 자리가 겹쳤던 변경점은 거기 없어서
+    # 정리 단계가 지워버릴 수 있고, 그러면 아래 '속도 변경은 타일 위에'
+    # 불변식이 깨진다. 템포 맵의 모든 변경점을 칸으로 넘긴다.
+    if args.floor_ms > 0:
+        onsets = drop_unhittable(
+            onsets, set(round(q12(b) * GRID) for b, _ in tempos),
+            tmap, args.floor_ms)
+
+    # ── 2박 초과 공백 채움 (진짜 무음 구간에만 남는다) ──────────
+    # 격자 '칸' 정수로만 계산한다. 박(float)으로 나누면 반올림이 마지막 조각을
+    # 밀어 2박을 넘길 수 있다.
+    #
+    # 고르게 나눈다. 예전엔 2박씩 그리디로 놓았는데(a+2, a+4, ...), 그러면
+    # 2와 1/12박 짜리 공백에서 마지막 조각이 1/12박만 남는다 — 172bpm 이면
+    # 29ms 라 물리적으로 못 친다. 같은 공백을 반으로 나누면 두 조각 다 1과
+    # 1/24박이라 편하다. 리듬적으로도 등분이 걸음답다.
+    MAX_CELLS = int(round(MAX_HOP * GRID))
     filled = []
     out = [onsets[0]]
     for o in onsets[1:]:
-        while o - out[-1] > MAX_HOP + 1e-9:
+        cells = int(round((o - out[-1]) * GRID))
+        if cells > MAX_CELLS:
             if args.no_fill:
                 raise SystemExit("공백 %.4g박 @ %.4g박 — 한 타일 최대 2박 (--no-fill)"
                                  % (o - out[-1], out[-1]))
-            nxt = q12(out[-1] + MAX_HOP)
-            out.append(nxt)
-            filled.append(nxt)
+            a = out[-1]
+            n = -(-cells // MAX_CELLS)     # 조각 수 (올림)
+            for k in range(1, n):
+                t = q12(a + round(cells * k / n) / GRID)
+                out.append(t)
+                filled.append(t)
         out.append(o)
     onsets = out
     if filled:
@@ -414,9 +644,29 @@ def main():
         "간격 위반: %s" % [g for g in gaps if not (0 < g <= MAX_HOP + 1e-9)]
     assert all(abs(g * GRID - round(g * GRID)) < 1e-6 for g in gaps), "격자 위반"
 
+    # ── 밀도 보고 ───────────────────────────────────────────────
+    # 채보가 심심한지/불가능한지는 박이 아니라 '초당 몇 번 누르나'로 결정된다.
+    # 생성할 때마다 눈에 보이게 찍는다 — 곡을 넣고 나서야 알아채면 늦다.
+    ms_gaps = sorted((tmap.sec_at(onsets[i]) - tmap.sec_at(onsets[i - 1])) * 1000.0
+                     for i in range(1, len(onsets)))
+    span_s = tmap.sec_at(onsets[-1]) - tmap.sec_at(onsets[0])
+    tight_n = sum(1 for g in ms_gaps if g < TIGHT_MS)
+    print("  밀도: 타일 %d · %.2f탭/초 · 간격 중앙 %.0fms (최소 %.0f · 최대 %.0f)"
+          % (len(onsets), len(onsets) / span_s, ms_gaps[len(ms_gaps) // 2],
+             ms_gaps[0], ms_gaps[-1]))
+    if tight_n:
+        print("     !! %.0fms 미만 간격 %d개 — 판정창이 이웃에 닿기 직전이다"
+              % (TIGHT_MS, tight_n))
+
     # ── 속도 표시 + 시작점 (전부 벽시계는 템포 맵이 정답) ────────
     speed_marks = []
-    prev_mult = 1.0
+    # 첫 타일의 배율은 1.0 이 아닐 수 있다. base_bpm 은 '가장 오래 가는' 템포라
+    # 곡 시작의 템포와 다를 수 있기 때문이다 (Mureka 2번: 앞 4박만 300bpm,
+    # 나머지 118bpm). 1.0 으로 가정하면 그 앞구간이 통째로 누락돼
+    # 히트타임이 25.7ms 어긋난다 — 타일 0 에 배율을 명시해 둔다.
+    prev_mult = tmap.bpm_at(onsets[0]) / base_bpm
+    if abs(prev_mult - 1.0) > 1e-9:
+        speed_marks.append([q12(onsets[0]), prev_mult])
     for beat, bpm in tempos:
         if beat < onsets[0] - 1e-9 or beat > onsets[-1] + 1e-9:
             continue
@@ -424,6 +674,15 @@ def main():
         if abs(mult - prev_mult) > 1e-9:
             speed_marks.append([q12(beat), mult])
             prev_mult = mult
+    # 이 파일 전체에서 가장 중요한 불변식: 속도가 바뀌는 지점에는 반드시 타일이
+    # 있어야 한다. 게임은 홉 하나를 상수 배속으로만 돌리므로, 홉 '중간'의 변경은
+    # 표현할 방법이 없고 그 홉의 길이가 통째로 틀린다.
+    # 위의 강제 삽입이 이걸 보장하는데, 한 번 조용히 깨진 적이 있다(순회 중
+    # onsets 변경으로 16개 중 1개만 삽입 -> 15.1ms). 결과를 직접 잠근다.
+    cells = set(round(o * GRID) for o in onsets)
+    off_tile = [b for b, _ in speed_marks if round(b * GRID) not in cells]
+    assert not off_tile, "속도 변경이 타일 위에 없다 (홉 중간 변경은 표현 불가): %s" % off_tile
+
     start_offset_ms = (tmap.sec_at(onsets[0]) - 60.0 / base_bpm) * 1000.0
 
     # ── 렌더 ────────────────────────────────────────────────────
@@ -443,7 +702,10 @@ def main():
             else:
                 dur_s = tmap.sec_at(b + d) - t0
                 render_tone(buf, t0, dur_s, p, wave, amp * v / 96.0, duty)
-    buf = normalize(buf)
+    # 피크가 아니라 '체감 크기'로 맞춘다. 스템을 여러 개 합치면 우연히 정렬된
+    # 피크 하나가 전체 게인을 정해버려서 곡마다 체감 크기가 4~6dB 씩 벌어지고,
+    # 그러면 같은 판정 효과음이 곡마다 다른 크기로 얹힌다.
+    buf = loudness_normalize(buf)
 
     os.makedirs(os.path.join(HERE, "assets"), exist_ok=True)
     write_wav(os.path.join(HERE, "assets", "%s.wav" % name), buf)
@@ -459,6 +721,12 @@ def main():
         "quant_max_err_beats": snap_max,
         "inserted_speed_tiles": inserted,
         "filled_gap_tiles": filled,
+        # 밀도 보강 이력. 'melody_onsets_beats' 는 이제 멜로디만이 아니라
+        # 멜로디+반주라서, 순수 멜로디가 몇 개였는지를 따로 남긴다.
+        "melody_only_count": mel_only,
+        "fill_above_beats": args.fill_above_beats,
+        "min_add_gap_ms": args.min_gap_ms,
+        "taps_per_sec": len(onsets) / span_s,
     }
     meta_path = os.path.join(HERE, "assets", "%s.json" % name)
     json.dump(meta, open(meta_path, "w"), indent=1)
@@ -479,10 +747,20 @@ def main():
     replay = replay_hit_times_from_tres(os.path.join(HERE, "charts", "%s.tres" % name))
     assert len(replay) == len(expected), \
         "타일 수 불일치 %d != %d" % (len(replay), len(expected))
-    worst = max(abs(a - b) for a, b in zip(replay, expected))
-    print("검증(Python): .tres 되계산 vs 템포맵 정답 — 최대 오차 %.6f ms  %s"
-          % (worst, "PASS" if worst < 0.01 else "FAIL"))
-    if worst >= 0.01:
+    # 누적 오차만 보면 안 된다. 긴 채보일수록 반올림이 쌓여 한계가 곡 길이에
+    # 따라 달라지고, 그렇다고 느슨하게 잡으면 진짜 버그를 놓친다.
+    #
+    # '타일당 오차'가 훨씬 예리한 지표다. 의미론 버그(속도 변경이 타일 위에
+    # 없다, 배율이 틀렸다, U턴이 뒤집혔다)는 그 타일 하나의 홉을 통째로 바꾸므로
+    # 계단으로 나타난다. 부동소수점 잡음은 절대 계단을 만들지 않는다.
+    # 실측 17곡: 잡음은 최대 0.0012ms/타일, 실제 버그는 1.45ms 와 11.8ms 였다.
+    err = [a - b for a, b in zip(replay, expected)]
+    worst = max(abs(e) for e in err)
+    step = max(abs(err[i] - err[i - 1]) for i in range(1, len(err)))
+    bad = step >= 0.01 or worst >= 0.5
+    print("검증(Python): .tres 되계산 vs 템포맵 정답 — 타일당 %.6f ms · 누적 %.6f ms  %s"
+          % (step, worst, "FAIL" if bad else "PASS"))
+    if bad:
         raise SystemExit(1)
     print("다음: godot --headless --script res://tests/verify_chart.gd -- "
           "--chart=res://charts/%s.tres" % name)

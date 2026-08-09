@@ -37,6 +37,19 @@ var offset_ms := 0.0
 ## SongSelect 의 K 메뉴가 채운다.
 var bound_keys := PackedInt32Array()
 
+## 입력 효과음(hit/miss)을 낼지. Main 이 M 키로 토글한다.
+##
+## 켜고 끌 수 있어야 하는 이유: 이 소리는 목적이 두 개인데 곡에 따라 하나가
+## 무의미해진다. 클릭 트랙에서는 '곡의 클릭과 내 입력음의 어긋남 = 내 오차'라
+## 캘리브레이션 도구지만(Main.gd 의 _hitsound 주석), 실제 음악에서는 타일이
+## 정의상 멜로디 온셋 위에 있어서 효과음이 멜로디 음과 같은 샘플에 겹친다.
+##
+## 그렇다고 음악에서 무조건 끌 수도 없다. 채움 타일(2박 초과 공백을 메우는
+## 타일)에는 멜로디 음이 아예 없어서, 끄면 그 타일은 쳐도 무음이 된다 —
+## 실측 14곡 4838타일 중 1515개(31.3%)가 채움이고 한 곡은 69% 였다.
+## 그래서 기본은 켜 두고 선택으로 남긴다.
+var sfx_enabled := true
+
 var _charts := {}   # 차트 경로 -> 기록 Dictionary
 
 
@@ -115,7 +128,8 @@ func save() -> void:
 	for k in bound_keys:
 		keys.append(int(k))
 	f.store_string(JSON.stringify({
-		"settings": {"offset_ms": offset_ms, "bound_keys": keys},
+		"settings": {"offset_ms": offset_ms, "bound_keys": keys,
+			"sfx_enabled": sfx_enabled},
 		"charts": _charts,
 	}, "  "))
 
@@ -124,6 +138,7 @@ func load_file() -> void:
 	_charts = {}
 	offset_ms = 0.0
 	bound_keys = PackedInt32Array()
+	sfx_enabled = true
 	if not FileAccess.file_exists(save_path):
 		return
 	var f := FileAccess.open(save_path, FileAccess.READ)
@@ -138,6 +153,7 @@ func load_file() -> void:
 	var s = data.get("settings", {})
 	if s is Dictionary:
 		offset_ms = float(s.get("offset_ms", 0.0))
+		sfx_enabled = bool(s.get("sfx_enabled", true))
 		for k in (s.get("bound_keys", []) as Array):
 			bound_keys.append(int(k))
 	var c = data.get("charts", {})

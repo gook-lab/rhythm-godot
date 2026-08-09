@@ -2,6 +2,8 @@
 # 새로 클론했을 때 생성 자산 일괄 재구성 (wav 류는 gitignore 라 레포에 없다).
 set -e
 cd "$(dirname "$0")/.."
+python3 tools/test_midilib.py
+python3 tools/test_density.py
 python3 tools/make_click.py 120 60
 python3 tools/make_hitsound.py
 python3 tools/make_song.py

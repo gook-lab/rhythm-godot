@@ -546,6 +546,16 @@ func t_records() -> void:
 	ok(int(rec2.plays) == 3 and int(rec2.clears) == 2, "왕복: plays 3 · clears 2")
 	ok(absf(float(rec2.best_acc) - 91.5) < 1e-4, "왕복: best_acc 유지")
 	ok(float(rec2.best_progress) >= 100.0 - 1e-4, "왕복: best_progress 유지")
+	ok(r2.sfx_enabled, "왕복: 입력음 기본값은 켬")
+
+	# 입력음 토글도 디스크에 남아야 한다 — 껐는데 다음 실행에 다시 켜지면
+	# 설정이 아니라 그냥 잡음이다.
+	r.sfx_enabled = false
+	r.save()
+	var r3: Node = load("res://scripts/Records.gd").new()
+	r3.save_path = TEST_PATH
+	r3.load_file()
+	ok(not r3.sfx_enabled, "왕복: 입력음 끔이 유지된다")
 
 	# 판정키: 기본은 전부, 바인딩하면 그 키만, 예약키는 어느 쪽에서도 안 된다
 	ok(r.is_judgment_key(KEY_SPACE), "기본: SPACE 허용")

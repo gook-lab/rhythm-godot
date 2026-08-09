@@ -86,8 +86,9 @@ func _rebuild() -> void:
 		_info.text = "차트가 없다 — python3 tools/make_charts.py"
 		return
 	var e: Dictionary = _entries[_sel]
-	_info.text = "BPM %.0f   ·   타일 %d   ·   %d:%02d\n%s" % [
-		e.bpm, e.tiles, int(e.secs) / 60, int(e.secs) % 60, _record_line(e.path)]
+	_info.text = "BPM %.0f   ·   타일 %d   ·   %d:%02d   ·   [M] 입력음 %s\n%s" % [
+		e.bpm, e.tiles, int(e.secs) / 60, int(e.secs) % 60,
+		"켬" if Records.sfx_enabled else "끔", _record_line(e.path)]
 
 
 ## 목록 행 끝에 붙는 기록 요약. 클리어했으면 랭크가, 못 했으면 진행도가 성적표다.
@@ -136,6 +137,13 @@ func _input(event: InputEvent) -> void:
 			_binding = true
 			_keybind_panel.visible = true
 			_refresh_keys()
+		KEY_M:
+			# 입력 효과음 토글. 플레이 중(Main)이 아니라 여기 두는 이유:
+			# 바인딩이 비어 있으면 M 도 판정키다. 토글을 Main 에 두면 M 을
+			# 예약키로 뺏어야 하고, 그만큼 양손 교타에서 쓸 키가 줄어든다.
+			Records.sfx_enabled = not Records.sfx_enabled
+			Records.save()
+			_rebuild()
 		KEY_ESCAPE:
 			get_tree().quit()
 

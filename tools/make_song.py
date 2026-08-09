@@ -256,6 +256,69 @@ def normalize(buf, peak=0.89):
     return [v * k for v in buf]
 
 
+# ------------------------------------------------------- 라우드니스 정규화
+# song_140.wav 의 실측 RMS. 판정 효과음(hit/miss)의 볼륨이 이 크기에 맞춰
+# 튜닝되어 있으므로, 모든 곡을 여기에 맞추면 효과음 균형이 곡마다 흔들리지 않는다.
+TARGET_RMS = 0.1778   # -15.0 dBFS
+LIMIT_BLOCK = 64      # 게인 포락선 계산 단위(샘플). 48kHz 에서 1.33ms
+LIMIT_LOOKAHEAD = 4   # 블록. 피크보다 먼저 게인을 내리기 위한 앞보기(~5ms)
+
+
+def loudness_normalize(buf, target_rms=TARGET_RMS, ceiling=0.89):
+    """체감 크기(RMS)를 맞추고, 그러다 넘치는 피크만 리미터로 눌러 앉힌다.
+
+    피크 정규화만 하면 곡마다 체감 크기가 달라진다. 스템을 여러 개 합치면
+    가끔 우연히 정렬되는 피크 하나가 전체 게인을 결정해버리기 때문이다 —
+    실측(2026-08-07): 6스템 합성곡은 크레스트 18~20dB 에 RMS -19~-21dB 인데
+    단일 트랙 song_140 은 크레스트 14dB 에 RMS -15dB 였다. 그래서 같은 판정음이
+    새 곡에서만 6dB 더 튀어나왔다.
+
+    리미터는 블록 최대값 -> 앞보기 최소 -> 릴리스 평활 -> 샘플별 보간으로 건다.
+    앞보기가 있어야 게인이 피크보다 '먼저' 내려가 트랜지언트가 안 깨진다.
+    """
+    n = len(buf)
+    if n == 0:
+        return buf
+    rms = math.sqrt(sum(v * v for v in buf) / n)
+    if rms <= 0.0:
+        return buf
+    g0 = target_rms / rms
+    buf = [v * g0 for v in buf]
+
+    # 블록 최대 -> 그 블록에 필요한 게인
+    nb = (n + LIMIT_BLOCK - 1) // LIMIT_BLOCK
+    need = [1.0] * nb
+    for b in range(nb):
+        seg = buf[b * LIMIT_BLOCK:(b + 1) * LIMIT_BLOCK]
+        pk = max(map(abs, seg)) if seg else 0.0
+        if pk > ceiling:
+            need[b] = ceiling / pk
+    if min(need) >= 1.0:
+        return buf   # 누를 게 없다
+
+    # 앞보기 최소: 피크가 오기 전에 이미 내려가 있게 한다
+    look = [min(need[b:b + LIMIT_LOOKAHEAD + 1]) for b in range(nb)]
+    # 릴리스 평활: 급히 내리고 천천히 올린다 (펌핑·지퍼 잡음 방지)
+    rel = 0.9971  # 블록당. 48kHz/64 기준 시상수 ~0.46s
+    g = 1.0
+    env = [1.0] * nb
+    for b in range(nb):
+        g = look[b] if look[b] < g else g * rel + look[b] * (1.0 - rel)
+        env[b] = g
+
+    out = [0.0] * n
+    for b in range(nb):
+        lo = b * LIMIT_BLOCK
+        hi = min(lo + LIMIT_BLOCK, n)
+        ga, gb = env[b], env[b + 1] if b + 1 < nb else env[b]
+        span = max(1, hi - lo)
+        cap = need[b]   # 게인이 올라가는 구간에서도 이 블록의 피크는 못 넘게
+        for i in range(lo, hi):
+            t = (i - lo) / span
+            out[i] = buf[i] * min(cap, ga + (gb - ga) * t)   # 블록 사이 선형 보간
+    return out
+
+
 def write_wav(path, samples):
     data = b"".join(struct.pack("<h", int(max(-1.0, min(1.0, s)) * 32767)) for s in samples)
     with open(path, "wb") as f:

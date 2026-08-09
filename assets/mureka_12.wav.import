@@ -2,13 +2,13 @@
 
 importer="wav"
 type="AudioStreamWAV"
-uid="uid://b23ns0kqa06x5"
-path="res://.godot/imported/mureka_neon.wav-1a4ae40afb385adecc3cc8b366ab4faf.sample"
+uid="uid://blosepu4ac811"
+path="res://.godot/imported/mureka_12.wav-461ca297443f3709b8fd9d784ca9f21c.sample"
 
 [deps]
 
-source_file="res://assets/mureka_neon.wav"
-dest_files=["res://.godot/imported/mureka_neon.wav-1a4ae40afb385adecc3cc8b366ab4faf.sample"]
+source_file="res://assets/mureka_12.wav"
+dest_files=["res://.godot/imported/mureka_12.wav-461ca297443f3709b8fd9d784ca9f21c.sample"]
 
 [params]
 

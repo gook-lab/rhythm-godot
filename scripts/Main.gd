@@ -360,7 +360,9 @@ func _input(event: InputEvent) -> void:
 		return
 	# 입력 즉시 히트사운드 — 판정보다 빠른 피드백. 곡의 클릭과 내 입력음의
 	# 어긋남이 곧 내 오차라서, 이게 손맛 캘리브레이션의 핵심 도구다.
-	_hitsound.play()
+	# 실제 음악에서는 타일이 멜로디 온셋 위라 겹쳐 들린다 — 곡 선택 화면 M 키로 끈다.
+	if Records.sfx_enabled:
+		_hitsound.play()
 	# 워밍업 중 입력을 여기서 막는다. 안 막으면 곡 맨 앞 입력이
 	# 이유 없이 Miss 로 기록되어 산포 표본을 오염시킨다.
 	if not AudioClock.is_warm():
@@ -422,7 +424,8 @@ func _on_judged(v: Judge.Verdict, delta_ms: float, tile: int) -> void:
 		_:
 			# 놓친 타일의 소리. 감시자 미스는 키 입력이 없어서 히트사운드가
 			# 안 난다 — 이게 없으면 미스가 화면으로만 오고 귀로는 안 온다.
-			_misssound.play()
+			if Records.sfx_enabled:
+				_misssound.play()
 			_planets.flash(vc)
 			# 콤보가 실제로 끊길 때만 흔든다. 이미 끊긴 상태에서 계속 미스하는 건
 			# 잃을 게 없으므로 흔들 이유도 없다. (on_judged 가 먼저 불려서
