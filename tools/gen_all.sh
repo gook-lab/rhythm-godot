@@ -4,6 +4,7 @@ set -e
 cd "$(dirname "$0")/.."
 python3 tools/test_midilib.py
 python3 tools/test_density.py
+python3 tools/synth.py     # 음색 자가측정 (스펙트럼 중심·피크·접힘)
 python3 tools/make_click.py 120 60
 python3 tools/make_hitsound.py
 python3 tools/make_song.py

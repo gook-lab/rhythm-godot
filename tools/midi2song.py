@@ -40,13 +40,17 @@ import json
 import math
 import os
 import re
+import subprocess
 import sys
+import tempfile
+import wave
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "tools"))
 
-from midilib import parse_smf, TempoMap, dejitter_tempos
-from make_song import square, triangle, midi_hz, noise, loudness_normalize
+from midilib import parse_smf, TempoMap, dejitter_tempos, resample_tempos_at_tiles
+from make_song import loudness_normalize
+import synth
 from make_click import write_wav
 import make_charts
 
@@ -63,85 +67,28 @@ def q12(beat):
 # ---------------------------------------------------------------- 렌더 (초 도메인)
 # make_song 은 상수 SPB(박 도메인)로 렌더하지만, 여기는 템포가 변하므로
 # 모든 이벤트를 템포 맵으로 초에 사상한 뒤 초 도메인에서 합성한다.
-def _env(i, n, attack=0.005, release=0.06):
-    t = i / SR
-    if t < attack:
-        return t / attack
-    tail = (n - i) / SR
-    return max(0.0, min(1.0, tail / release))
+#
+# 합성 자체는 tools/synth.py 가 한다 — 밴드리미티드 웨이브테이블 + 역할별 ADSR.
+# 예전엔 여기서 나이브 사각파를 평평한 엔벌로프로 찍었는데, 그게 "원곡처럼
+# 안 들린다"의 원인이었다 (synth.py 머리말에 왜인지 적어 뒀다).
 
 
-def render_tone(buf, t0, dur_s, pitch, wave, amp, duty=0.5):
-    start = int(round(t0 * SR))
-    n = max(1, int(round(dur_s * SR)))
-    f = midi_hz(pitch)
-    for i in range(n):
-        j = start + i
-        if j >= len(buf):
-            break
-        t = i / SR
-        v = square(t, f, duty) if wave == "sq" else triangle(t, f)
-        buf[j] += v * amp * _env(i, n)
+def track_role(label, is_melody):
+    """스템 파일명 -> (역할, 진폭).
 
-
-def render_kick(buf, t0, amp=0.85):
-    start = int(round(t0 * SR))
-    n = int(0.13 * SR)
-    for i in range(n):
-        j = start + i
-        if j >= len(buf):
-            break
-        t = i / SR
-        f = 130.0 * math.exp(-t * 32.0) + 45.0
-        buf[j] += math.sin(2 * math.pi * f * t) * math.exp(-t * 22.0) * amp
-
-
-def render_snare(buf, t0, amp=0.5):
-    start = int(round(t0 * SR))
-    n = int(0.11 * SR)
-    for i in range(n):
-        j = start + i
-        if j >= len(buf):
-            break
-        t = i / SR
-        e = math.exp(-t * 30.0)
-        buf[j] += (noise() * 0.75 + math.sin(2 * math.pi * 190.0 * t) * 0.25) * e * amp
-
-
-def render_hat(buf, t0, amp=0.22, open_=False):
-    start = int(round(t0 * SR))
-    n = int((0.09 if open_ else 0.03) * SR)
-    for i in range(n):
-        j = start + i
-        if j >= len(buf):
-            break
-        buf[j] += noise() * math.exp(-(i / SR) * (26.0 if open_ else 90.0)) * amp
-
-
-def render_drum(buf, t0, pitch, vel):
-    a = vel / 100.0
-    if pitch in (35, 36):
-        render_kick(buf, t0, 0.85 * a)
-    elif pitch in (38, 40):
-        render_snare(buf, t0, 0.5 * a)
-    elif pitch == 46:
-        render_hat(buf, t0, 0.22 * a, open_=True)
-    else:
-        render_hat(buf, t0, 0.22 * a)
-
-
-def track_voice(label, is_melody):
-    """라벨 -> (파형, 진폭, 듀티). 스템 파일명 관행을 그대로 쓴다."""
+    역할이 파형·하모닉 상한·ADSR 을 통째로 정한다(synth.ROLES).
+    진폭은 믹스 균형만 잡는다 — 리드가 반주에 묻히면 채보를 귀로 못 따라간다.
+    """
     l = label.lower()
     if is_melody:
-        return ("sq", 0.24, 0.5)
+        return ("lead", 0.26)
     if "bass" in l:
-        return ("tri", 0.30, 0.5)
+        return ("bass", 0.30)
     if "guitar" in l:
-        return ("sq", 0.13, 0.25)
+        return ("pluck", 0.15)
     if "piano" in l:
-        return ("tri", 0.20, 0.5)
-    return ("tri", 0.15, 0.5)
+        return ("pluck", 0.17)
+    return ("pad", 0.14)
 
 
 # ---------------------------------------------------------------- 모델
@@ -459,6 +406,154 @@ def replay_hit_times_from_tres(tres_path):
     return [v for i, v in enumerate(out) if i not in ghosts]
 
 
+# ---------------------------------------------------------------- 원곡 오디오 채택
+# GM 드럼: 킥 35/36 · 스네어 38/40 · 저탐 41/43. 정렬 계측에 이것만 쓴다 —
+# hat 은 8분음표로 깔려 있어 어느 오프셋에나 겹치므로 판별력을 죽인다.
+KICK_SNARE = frozenset((35, 36, 38, 40, 41, 43))
+
+# 정렬 게이트. 구간별 국소 오프셋의 산포가 이걸 넘으면 원곡 채택을 거부한다.
+# 근거(2026-08-10, 과부하 루프 실측): 원시 전사 맵은 잔차 σ 2.2ms · 범위 8ms 로
+# 정렬됐고, dejitter 맵은 σ 7.8ms · 범위 48ms 로 어긋났다. 게이트는 그 사이 —
+# '원시 맵 수준으로 붙어야 통과'이면서 측정 잡음(±5ms)에는 관대하게.
+ALIGN_SD_GATE_MS = 8.0
+ALIGN_RANGE_GATE_MS = 25.0
+
+
+def _decode_audio_mono48k(path):
+    """원곡(mp3 등) -> 48kHz 모노 float 리스트. macOS afconvert 를 쓴다."""
+    fd, tmp = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        r = subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@%d" % SR,
+                            "-c", "1", path, tmp], capture_output=True)
+        if r.returncode != 0:
+            raise SystemExit("afconvert 실패 (macOS 전용): %s"
+                             % r.stderr.decode(errors="replace").strip())
+        w = wave.open(tmp)
+        n = w.getnframes()
+        raw = w.readframes(n)
+        w.close()
+    finally:
+        os.unlink(tmp)
+    import struct as _s
+    return [v / 32768.0 for v in _s.unpack("<%dh" % n, raw)]
+
+
+def _flux(samples, hop=240):
+    """에너지 플럭스 (프레임 RMS 의 양의 차분). 온셋이 여기서 피크로 선다."""
+    rms = []
+    for i in range(0, len(samples) - hop, hop):
+        s = 0.0
+        for v in samples[i:i + hop]:
+            s += v * v
+        rms.append(math.sqrt(s / hop))
+    return [max(0.0, rms[i] - rms[i - 1]) for i in range(1, len(rms))], SR / hop
+
+
+def _flux_score(flux, fps, onsets_s, off):
+    s = 0.0
+    for t in onsets_s:
+        x = (t + off) * fps
+        i = int(x)
+        if 0 <= i < len(flux) - 1:
+            s += flux[i] + (flux[i + 1] - flux[i]) * (x - i)
+    return s / max(len(onsets_s), 1)
+
+
+def adopt_original_audio(path, tmap, tracks, name):
+    """원곡을 게임 타임라인에 정렬해 채택한다. 반환: (버퍼, 메타 필드).
+
+    가정하지 않고 잰다: 킥·스네어의 채보 시각열을 원곡 플럭스에 상호상관해
+    전역 오프셋을 찾고, 곡을 6구간으로 잘라 국소 오프셋의 산포를 계측한다.
+    산포가 게이트를 넘으면 실패 처리 — 어긋난 원곡으로 게임이 만들어지는 것보다
+    변환이 죽는 쪽이 낫다.
+    """
+    samples = _decode_audio_mono48k(path)
+    flux, fps = _flux(samples)
+
+    dr_beats = sorted(set(
+        n[0] for tr in tracks if tr["drums"] for n in tr["notes"]
+        if n[2] in KICK_SNARE))
+    if len(dr_beats) < 30:   # 드럼이 없거나 빈약하면 전체 온셋으로 폴백
+        dr_beats = sorted(set(n[0] for tr in tracks for n in tr["notes"]))
+    dr_sec = [tmap.sec_at(b) for b in dr_beats]
+
+    # 전역 오프셋: 5ms 성김 -> 1ms 정밀. 카운트인만큼 음수가 정상이다.
+    best_s, best_o = -1.0, 0.0
+    off = -6.0
+    while off <= 1.0:
+        s = _flux_score(flux, fps, dr_sec, off)
+        if s > best_s:
+            best_s, best_o = s, off
+        off += 0.005
+    for k in range(-10, 11):
+        o = best_o + k * 0.001
+        s = _flux_score(flux, fps, dr_sec, o)
+        if s > best_s:
+            best_s, best_o = s, o
+
+    # 구간별 국소 오프셋 -> 산포. 드리프트가 있으면 여기서 드러난다.
+    span = dr_sec[-1] - dr_sec[0]
+    locals_ms = []
+    for wnd in range(6):
+        lo = dr_sec[0] + span * wnd / 6.0
+        hi = dr_sec[0] + span * (wnd + 1) / 6.0
+        seg = [t for t in dr_sec if lo <= t < hi]
+        if len(seg) < 8:
+            continue
+        bs, bo = -1.0, best_o
+        for k in range(-60, 61):
+            o = best_o + k * 0.001
+            s = _flux_score(flux, fps, seg, o)
+            if s > bs:
+                bs, bo = s, o
+        locals_ms.append((bo - best_o) * 1000.0)
+    mean = sum(locals_ms) / len(locals_ms)
+    sd = math.sqrt(sum((v - mean) ** 2 for v in locals_ms) / len(locals_ms))
+    rng = max(locals_ms) - min(locals_ms)
+    print("  원곡 정렬: 오프셋 %+.1fms · 구간 산포 σ %.1fms · 범위 %.1fms  (%s)"
+          % (best_o * 1000.0, sd, rng,
+             " ".join("%+.0f" % v for v in locals_ms)))
+    if sd > ALIGN_SD_GATE_MS or rng > ALIGN_RANGE_GATE_MS:
+        raise SystemExit(
+            "원곡 정렬 실패: σ %.1fms (게이트 %.0f) · 범위 %.1fms (게이트 %.0f)\n"
+            "  이 오디오는 이 스템의 곡이 아니거나, 전사가 원곡을 따라가지 못한다."
+            % (sd, ALIGN_SD_GATE_MS, rng, ALIGN_RANGE_GATE_MS))
+
+    # 채보 시각 t 의 소리는 원곡 (t + off) 에 있다 -> 원곡을 -off 만큼 민다.
+    lead = int(round(-best_o * SR))
+    if lead >= 0:
+        buf = [0.0] * lead + samples
+    else:
+        buf = samples[-lead:]
+    return buf, {
+        "original_audio": os.path.basename(path),
+        "align_offset_ms": best_o * 1000.0,
+        "align_local_ms": locals_ms,
+        "align_sd_ms": sd,
+    }
+
+
+## 속도 표시: 템포 구간 -> (박, 배율) 목록. 채보의 배속 체계는 base_bpm 기준이다.
+def speed_marks_from(tempos, tmap, onsets, base_bpm):
+    marks = []
+    # 첫 타일의 배율은 1.0 이 아닐 수 있다. base_bpm 은 '가장 오래 가는' 템포라
+    # 곡 시작의 템포와 다를 수 있기 때문이다 (Mureka 2번: 앞 4박만 300bpm,
+    # 나머지 118bpm). 1.0 으로 가정하면 그 앞구간이 통째로 누락돼
+    # 히트타임이 25.7ms 어긋난다 — 타일 0 에 배율을 명시해 둔다.
+    prev_mult = tmap.bpm_at(onsets[0]) / base_bpm
+    if abs(prev_mult - 1.0) > 1e-9:
+        marks.append([q12(onsets[0]), prev_mult])
+    for beat, bpm in tempos:
+        if beat < onsets[0] - 1e-9 or beat > onsets[-1] + 1e-9:
+            continue
+        mult = bpm / base_bpm
+        if abs(mult - prev_mult) > 1e-9:
+            marks.append([q12(beat), mult])
+            prev_mult = mult
+    return marks
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("midi", nargs="+")
@@ -481,6 +576,12 @@ def main():
     ap.add_argument("--floor-ms", type=float, default=FLOOR_MS,
                     help="이보다 좁은 간격은 뒤 타일을 버려서 없앤다(전사 잡음 "
                          "청소). 0 이면 원본 그대로 (기본 %.0f)" % FLOOR_MS)
+    ap.add_argument("--audio", default=None,
+                    help="원곡 오디오(mp3 등)를 이 파일로 채택한다 — 신스 렌더 대신. "
+                         "채보 시간축은 원시 전사 맵에 타일 해상도로 고정되고 "
+                         "(midilib.resample_tempos_at_tiles), 킥·스네어 상호상관으로 "
+                         "자동 정렬 후 산포 게이트(σ%.0fms·범위%.0fms)를 통과해야 한다"
+                         % (ALIGN_SD_GATE_MS, ALIGN_RANGE_GATE_MS))
     args = ap.parse_args()
 
     name = args.name or os.path.splitext(os.path.basename(args.midi[0]))[0]
@@ -644,6 +745,24 @@ def main():
         "간격 위반: %s" % [g for g in gaps if not (0 < g <= MAX_HOP + 1e-9)]
     assert all(abs(g * GRID - round(g * GRID)) < 1e-6 for g in gaps), "격자 위반"
 
+    # ── 원곡 오디오 모드: 시간축을 원시 전사 맵에 '타일 해상도'로 고정 ──
+    # dejitter 맵은 원시 맵에서 벽시계가 떠내려간다(실측 mureka_09: 최대 92.2ms,
+    # 곡내 방황 -21~-69ms). 렌더 오디오는 같은 맵으로 만드니 문제가 없지만,
+    # 원곡은 원시 타임라인 위에 있다(원시 맵 대비 실측 잔차 σ 2.2ms).
+    # 경계를 타일 위에만 두는 시간 보존 리샘플(midilib)이면 타일 벽시계가
+    # 원시 맵과 정확히 같아진다 — 남는 채보-원곡 오차는 격자 스냅분뿐이다.
+    # 마커 '표시'는 의도된 변경(정리 맵)만 쓴다 — 홉 배율은 전사 잡음(±7%)이다.
+    display_marks = speed_marks_from(tempos, tmap, onsets, base_bpm)
+    if args.audio:
+        raw_shifted = sorted((b + shift, v) for b, v in tempos_raw)
+        if raw_shifted[0][0] > 1e-12:
+            raw_shifted.insert(0, (0.0, raw_shifted[0][1]))
+        tempos = resample_tempos_at_tiles(
+            raw_shifted, onsets, max(onsets[-1], src_end_beat + shift))
+        tmap = TempoMap(tempos)
+        print("  원곡 모드: 템포를 타일 해상도로 리샘플 — 구간 %d개 (타일 벽시계 = 원시 전사 맵)"
+              % len(tempos))
+
     # ── 밀도 보고 ───────────────────────────────────────────────
     # 채보가 심심한지/불가능한지는 박이 아니라 '초당 몇 번 누르나'로 결정된다.
     # 생성할 때마다 눈에 보이게 찍는다 — 곡을 넣고 나서야 알아채면 늦다.
@@ -659,21 +778,9 @@ def main():
               % (TIGHT_MS, tight_n))
 
     # ── 속도 표시 + 시작점 (전부 벽시계는 템포 맵이 정답) ────────
-    speed_marks = []
-    # 첫 타일의 배율은 1.0 이 아닐 수 있다. base_bpm 은 '가장 오래 가는' 템포라
-    # 곡 시작의 템포와 다를 수 있기 때문이다 (Mureka 2번: 앞 4박만 300bpm,
-    # 나머지 118bpm). 1.0 으로 가정하면 그 앞구간이 통째로 누락돼
-    # 히트타임이 25.7ms 어긋난다 — 타일 0 에 배율을 명시해 둔다.
-    prev_mult = tmap.bpm_at(onsets[0]) / base_bpm
-    if abs(prev_mult - 1.0) > 1e-9:
-        speed_marks.append([q12(onsets[0]), prev_mult])
-    for beat, bpm in tempos:
-        if beat < onsets[0] - 1e-9 or beat > onsets[-1] + 1e-9:
-            continue
-        mult = bpm / base_bpm
-        if abs(mult - prev_mult) > 1e-9:
-            speed_marks.append([q12(beat), mult])
-            prev_mult = mult
+    # 원곡 모드에선 tempos 가 홉 단위 리샘플이라 마크가 타일마다 붙을 수 있다 —
+    # 그건 배속(기계)이고, 표시는 위의 display_marks 가 따로 담당한다.
+    speed_marks = speed_marks_from(tempos, tmap, onsets, base_bpm)
     # 이 파일 전체에서 가장 중요한 불변식: 속도가 바뀌는 지점에는 반드시 타일이
     # 있어야 한다. 게임은 홉 하나를 상수 배속으로만 돌리므로, 홉 '중간'의 변경은
     # 표현할 방법이 없고 그 홉의 길이가 통째로 틀린다.
@@ -694,14 +801,17 @@ def main():
           % (total / SR, len(tracks), n_notes))
     buf = [0.0] * total
     for i, tr in enumerate(tracks):
-        wave, amp, duty = track_voice(tr["label"], i == mel_i)
+        role, amp = track_role(tr["label"], i == mel_i)
         for b, d, p, v in tr["notes"]:
             t0 = tmap.sec_at(b)
             if tr["drums"]:
-                render_drum(buf, t0, p, v)
+                synth.drum(buf, t0, p, v)
             else:
                 dur_s = tmap.sec_at(b + d) - t0
-                render_tone(buf, t0, dur_s, p, wave, amp * v / 96.0, duty)
+                synth.render(buf, t0, dur_s, synth.midi_hz(p), role,
+                             amp * v / 96.0)
+    # 공간감. 마른 신호는 음색을 아무리 다듬어도 '음원'이 아니라 '테스트 톤'이다.
+    synth.slapback(buf)
     # 피크가 아니라 '체감 크기'로 맞춘다. 스템을 여러 개 합치면 우연히 정렬된
     # 피크 하나가 전체 게인을 정해버려서 곡마다 체감 크기가 4~6dB 씩 벌어지고,
     # 그러면 같은 판정 효과음이 곡마다 다른 크기로 얹힌다.
@@ -709,6 +819,17 @@ def main():
 
     os.makedirs(os.path.join(HERE, "assets"), exist_ok=True)
     write_wav(os.path.join(HERE, "assets", "%s.wav" % name), buf)
+
+    # ── 원곡 채택: 신스 렌더를 원곡으로 덮어쓴다 ─────────────────
+    # 렌더 블록을 조건 분기로 감싸지 않은 이유: 신스 경로가 별도로 다듬어지는
+    # 중이라 재들여쓰기는 충돌만 만든다. 낭비는 렌더 수십 초 — 곡당 1회다.
+    audio_meta = {}
+    if args.audio:
+        buf, audio_meta = adopt_original_audio(args.audio, tmap, tracks, name)
+        buf = loudness_normalize(buf)
+        write_wav(os.path.join(HERE, "assets", "%s.wav" % name), buf)
+        print("  원곡 채택: %s -> assets/%s.wav (신스 렌더 대체)"
+              % (os.path.basename(args.audio), name))
 
     meta = {
         "bpm": base_bpm,
@@ -727,7 +848,11 @@ def main():
         "fill_above_beats": args.fill_above_beats,
         "min_add_gap_ms": args.min_gap_ms,
         "taps_per_sec": len(onsets) / span_s,
+        # 마커를 '표시할' 변경(정리 맵의 의도된 것). 원곡 모드에선
+        # speed_marks_beats(홉 단위 보정)와 다르다 — Chart.speed_display 로 간다.
+        "speed_display_beats": [b for b, _ in display_marks],
     }
+    meta.update(audio_meta)
     meta_path = os.path.join(HERE, "assets", "%s.json" % name)
     json.dump(meta, open(meta_path, "w"), indent=1)
 

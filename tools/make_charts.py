@@ -380,7 +380,7 @@ def write_tres(name, title, bpm, hops_wanted, start_offset_ms=None, speed_change
 
 
 def _emit_tres(name, title, bpm, ang, hops, twirls, ghosts,
-               start_offset_ms, speed_changes, worst):
+               start_offset_ms, speed_changes, worst, display_tiles=None):
     total = sum(hops)
     path = os.path.join(HERE, "charts", name + ".tres")
     with open(path, "w", encoding="utf-8") as f:
@@ -405,6 +405,11 @@ def _emit_tres(name, title, bpm, ang, hops, twirls, ghosts,
             # 2.8e-6 이 곱해진다 — 실측 489타일 곡에서 0.034ms 누적.
             f.write("speed_changes = PackedVector2Array(%s)\n"
                     % ", ".join("%d, %s" % (int(i), fmt(m)) for i, m in speed_changes))
+        # 마커를 그릴 타일만. 원곡 채보의 홉 단위 보정 배율(전사 잡음)은
+        # speed_changes 에는 있어도 여기 없으면 화면에 안 나온다 (Chart.gd 주석).
+        if speed_changes and display_tiles is not None:
+            f.write("speed_display = PackedInt32Array(%s)\n"
+                    % ", ".join(str(int(t)) for t in display_tiles))
         f.write('title = "%s"\n' % title)
     print("%-20s 타일 %3d · %6.1f박 · %5.1fs · 카운트인 %.0fms · 착지오차 %.5fpx%s%s"
           % (name + ".tres", len(ang), total, total * 60.0 / bpm,
@@ -497,6 +502,21 @@ def chart_from_song(meta_path, name, title, audio_res, speed_marks=None):
                   % (beat, onsets[idx]))
         speed_changes.append((old_to_new[idx + 1], mult))
 
+    # 표시용 속도 타일(의도된 변경만). 원곡 모드에선 speed_changes(홉 단위
+    # 보정 배율)와 갈라진다. 의도된 변경이 하나도 없으면 [-1] 로 '없음'을
+    # 명시한다 — 필드 부재(구버전: 전부 표시)와 구분하기 위해서다.
+    display_tiles = None
+    disp_beats = meta.get("speed_display_beats")
+    if disp_beats is not None and speed_changes:
+        display_tiles = []
+        for beat in disp_beats:
+            idx = next((k for k, o in enumerate(onsets)
+                        if abs(o - beat) <= 1e-6), None)
+            if idx is not None:
+                display_tiles.append(old_to_new[idx + 1])
+        if not display_tiles:
+            display_tiles = [-1]
+
     # 벽시계 시작점: 메타가 주면 그대로(가변 템포 경로), 없으면 상수 템포 공식.
     so_ms = meta.get("start_offset_ms")
     if so_ms is None:
@@ -508,7 +528,7 @@ def chart_from_song(meta_path, name, title, audio_res, speed_marks=None):
     AUDIO = audio_res
     try:
         _emit_tres(name, title, bpm, ang, hops, twirls, ghosts,
-                   so_ms, speed_changes, worst)
+                   so_ms, speed_changes, worst, display_tiles)
     finally:
         AUDIO = prev_audio
     print("%-20s 첫 온셋 %g박 -> 타일0 @ %.3fs · 심판 타일 %d · 겹침 %d쌍"

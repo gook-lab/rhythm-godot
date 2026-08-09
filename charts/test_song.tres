@@ -11,4 +11,5 @@ start_offset_ms = 1500
 audio = ExtResource("2_audio")
 twirl_tiles = PackedInt32Array(7, 26)
 speed_changes = PackedVector2Array(19, 1.5, 36, 1)
+speed_display = PackedInt32Array(19, 36)
 title = "MIDI 픽스처 (템포 120-180-120)"
