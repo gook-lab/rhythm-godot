@@ -590,10 +590,29 @@ def main():
                          "(midilib.resample_tempos_at_tiles), 킥·스네어 상호상관으로 "
                          "자동 정렬 후 산포 게이트(σ%.0fms·범위%.0fms)를 통과해야 한다"
                          % (ALIGN_SD_GATE_MS, ALIGN_RANGE_GATE_MS))
+    ap.add_argument("--force-synth", action="store_true",
+                    help="원곡 오디오 채보를 알고도 신스 렌더로 되돌린다 "
+                         "(--audio 없는 재생성이 원곡 채보를 만나면 기본은 중단)")
     args = ap.parse_args()
 
     name = args.name or os.path.splitext(os.path.basename(args.midi[0]))[0]
     title = args.title or name
+
+    # 원곡 채보를 '조용한 신스 회귀'로부터 지킨다. 실제로 한 번 당했다 —
+    # 전곡 재생성 스윕이 --audio 없이 mureka_09 를 훑어 정리맵(신스) 버전으로
+    # 되돌렸고, 그 상태가 커밋까지 갔다(3cf41e8, 6aa2e8d 에서 복원).
+    # 파일 덮어쓰기는 소리가 안 나므로 여기서 소리를 낸다.
+    prev_meta_path = os.path.join(HERE, "assets", "%s.json" % name)
+    if not args.audio and not args.force_synth and os.path.exists(prev_meta_path):
+        try:
+            prev = json.load(open(prev_meta_path))
+        except (ValueError, OSError):
+            prev = {}
+        if prev.get("original_audio"):
+            raise SystemExit(
+                "%s 는 원곡 오디오 채보다(%s). --audio 없이 재생성하면 신스로\n"
+                "되돌아간다 — 원곡 유지는 --audio <파일>, 의도한 회귀는 --force-synth."
+                % (name, prev["original_audio"]))
 
     tracks, tempos_raw = load_model(args.midi)
     src_end_beat = max(n[0] + n[1] for tr in tracks for n in tr["notes"])
