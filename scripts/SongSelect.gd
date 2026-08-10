@@ -61,6 +61,12 @@ func _scan_charts() -> Array:
 					"tiles": c.angles.size() - 1,
 					"secs": ht[ht.size() - 1] / 1000.0 if ht.size() > 0 else 0.0,
 					"speed": c.speed_changes.size() > 0,
+					# 원곡 오디오 여부. 채보 스키마엔 없지만 채널 수가 그대로
+					# 구분자다 — 신스 렌더는 전부 모노(write_wav 기본), 원곡
+					# 채택(midi2song --audio)은 전부 스테레오로 굽는다.
+					# 신스가 스테레오가 되는 날엔 이 배지가 과표시될 뿐 안 깨진다.
+					"original": c.audio is AudioStreamWAV
+						and (c.audio as AudioStreamWAV).stereo,
 				})
 		f = d.get_next()
 	out.sort_custom(func(a, b): return a.path < b.path)
@@ -74,7 +80,9 @@ func _rebuild() -> void:
 		var e: Dictionary = _entries[i]
 		var l := Label.new()
 		var mark := "▶ " if i == _sel else "   "
-		var extra := "  🐇" if e.speed else ""
+		# 🎵 = 원곡 오디오가 흐르는 곡. 어느 곡이 '진짜 노래'인지 고르기 전에 보여야
+		# 원곡 도입(README 원곡 채택 섹션)이 목록에서 체감된다.
+		var extra := ("  🎵" if e.original else "") + ("  🐇" if e.speed else "")
 		l.text = "%s%s%s%s" % [mark, e.title, extra, _record_tail(e.path)]
 		l.add_theme_font_size_override("font_size", 24)
 		if i == _sel:
