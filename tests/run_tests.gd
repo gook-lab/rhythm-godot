@@ -380,21 +380,21 @@ func t_judge_windows() -> void:
 func t_judge_classify() -> void:
 	print("판정 등급 — 7등급 경계와 부호")
 	var j := Judge.new()
-	j.set_gaps(INF, INF)   # 기준창 30/60/110
+	j.set_gaps(INF, INF)   # 기준창 25/45/80
 	ok(j.classify(0.0) == Judge.Verdict.PERFECT, "0ms -> PERFECT")
-	ok(j.classify(30.0) == Judge.Verdict.PERFECT, "경계 +30 -> PERFECT")
-	ok(j.classify(-30.0) == Judge.Verdict.PERFECT, "경계 -30 -> PERFECT")
-	ok(j.classify(45.0) == Judge.Verdict.LATE_PERFECT, "+45 -> LATE PERFECT")
-	ok(j.classify(-45.0) == Judge.Verdict.EARLY_PERFECT, "-45 -> EARLY PERFECT")
-	ok(j.classify(90.0) == Judge.Verdict.VERY_LATE, "+90 -> LATE!")
-	ok(j.classify(-90.0) == Judge.Verdict.VERY_EARLY, "-90 -> EARLY!")
+	ok(j.classify(25.0) == Judge.Verdict.PERFECT, "경계 +25 -> PERFECT")
+	ok(j.classify(-25.0) == Judge.Verdict.PERFECT, "경계 -25 -> PERFECT")
+	ok(j.classify(35.0) == Judge.Verdict.LATE_PERFECT, "+35 -> LATE PERFECT")
+	ok(j.classify(-35.0) == Judge.Verdict.EARLY_PERFECT, "-35 -> EARLY PERFECT")
+	ok(j.classify(60.0) == Judge.Verdict.VERY_LATE, "+60 -> LATE!")
+	ok(j.classify(-60.0) == Judge.Verdict.VERY_EARLY, "-60 -> EARLY!")
 	ok(j.classify(200.0) == Judge.Verdict.TOO_LATE, "+200 -> TOO LATE")
 	ok(j.classify(-200.0) == Judge.Verdict.TOO_EARLY, "-200 -> TOO EARLY")
 	ok(Judge.is_miss(Judge.Verdict.TOO_LATE), "TOO_LATE 는 미스")
 	ok(Judge.is_miss(Judge.Verdict.TOO_EARLY), "TOO_EARLY 는 미스")
 	ok(not Judge.is_miss(Judge.Verdict.VERY_LATE), "VERY_LATE 는 미스 아님")
 	# 창이 좁아져도 등급 판정은 같은 규칙을 따른다
-	j.set_gaps(100.0, 100.0)   # miss 45, perfect ~12.3
+	j.set_gaps(100.0, 100.0)   # cap 45 < 80 -> miss 45, perfect ~14
 	ok(j.classify(0.0) == Judge.Verdict.PERFECT, "좁은 창에서도 0ms -> PERFECT")
 	ok(j.classify(50.0) == Judge.Verdict.TOO_LATE, "좁은 창에서 +50 -> TOO LATE")
 	j.free()

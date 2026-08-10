@@ -20,10 +20,12 @@ extends Node
 ## 999 = 일부러 안 누른다(감시자가 TOO_LATE 를 내야 한다).
 ##
 ## 값은 '판정창 중앙 - 폴링 편향(~10ms)' 이다. 이 하네스는 프레임마다 폴링해서
-## 항상 +7~13ms 늦게 누른다. 처음에 +45(LATE PERFECT 창 30~60 의 중앙)를 줬더니
-## 실측 +52~58 로 상한 60 에 2~8ms 여유로 붙어서, 프레임 히치 한 번에
-## VERY_LATE 로 넘어가는 플레이크가 났다. 중앙-10 으로 두면 여유가 12ms 이상이다.
-const OFFSETS := [-10.0, 35.0, -55.0, 75.0, -95.0, 999.0, -10.0, -10.0, -10.0]
+## 항상 +7~13ms 늦게 누른다. 처음에 +45(당시 LATE PERFECT 창 30~60 의 중앙)를
+## 줬더니 실측 +52~58 로 상한에 2~8ms 여유로 붙어서 프레임 히치 한 번에
+## 등급이 넘어가는 플레이크가 났다. 항상 '띠의 중앙'을 겨냥한다.
+##
+## 판정창 25/45/80 기준: LATE_PERFECT 띠 (25,45] 중앙 35 · VERY 띠 (45,80] 중앙 62.
+const OFFSETS := [-10.0, 25.0, -45.0, 52.0, -72.0, 999.0, -10.0, -10.0, -10.0]
 
 var _main: Node
 var _hit: PackedFloat32Array
@@ -156,11 +158,11 @@ func _check_play() -> void:
 	_expect(score.count_of(Judge.Verdict.LATE_PERFECT) == 1,
 		"+35ms -> LATE PERFECT (%d건)" % score.count_of(Judge.Verdict.LATE_PERFECT))
 	_expect(score.count_of(Judge.Verdict.EARLY_PERFECT) == 1,
-		"-55ms -> EARLY PERFECT (%d건)" % score.count_of(Judge.Verdict.EARLY_PERFECT))
+		"-35ms -> EARLY PERFECT (%d건)" % score.count_of(Judge.Verdict.EARLY_PERFECT))
 	_expect(score.count_of(Judge.Verdict.VERY_LATE) == 1,
-		"+75ms -> LATE! (%d건)" % score.count_of(Judge.Verdict.VERY_LATE))
+		"+62ms -> LATE! (%d건)" % score.count_of(Judge.Verdict.VERY_LATE))
 	_expect(score.count_of(Judge.Verdict.VERY_EARLY) == 1,
-		"-95ms -> EARLY! (%d건)" % score.count_of(Judge.Verdict.VERY_EARLY))
+		"-62ms -> EARLY! (%d건)" % score.count_of(Judge.Verdict.VERY_EARLY))
 
 	# 3) echo 가 걸러졌는가 — 안 걸러졌으면 판정 수가 타일 수를 넘는다
 	_expect(score.total <= _hit.size() - 1,

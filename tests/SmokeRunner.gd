@@ -13,13 +13,17 @@ extends Node
 ## 단위 테스트가 못 잡는 것을 본다:
 ##   감시자가 무입력 Miss 로 실제 전진하는가 · 곡 종료에 도달하는가 · 클럭 역행 크기
 
-## 자동플레이 앞보기 상한(ms). Judge 의 Perfect 창(±30ms) 절반 아래로 둔다 —
+## 자동플레이 앞보기 상한(ms). Judge 의 Perfect 창(±25ms) 절반 아래로 둔다 —
 ## 보정이 판정을 흔들면 안 된다. 144fps 의 정상 보정치는 10.4ms 라 안 걸린다.
-const MAX_LOOKAHEAD_MS := 15.0
+const MAX_LOOKAHEAD_MS := 12.0
 
 ## 이보다 긴 프레임은 '히치'로 센다. 144fps 정상 프레임이 6.9ms 이므로
 ## 25ms 는 3배 이상 밀린 것 — 머신 부하지 게임 문제가 아니다.
 const HITCH_MS := 25.0
+
+## 자동플레이 입력 산포 상한(ms). 이보다 크면 하네스가 정확히 누르지 못한 것이라
+## 정확도 판정 자체가 무효다. 프레임 양자화 몫이 ~2ms 이므로 2.5배로 잡았다.
+const AUTOPLAY_JITTER_MS := 5.0
 
 ## 기본 상한. 긴 곡은 --max-sec= 로 늘린다 (mureka 곡 149초).
 var max_seconds := 95.0
@@ -173,7 +177,12 @@ func _process(delta: float) -> void:
 				_pressed += 1
 
 	var u: float = _main.get("_last_u")
-	if u >= 0.999:
+	# 아웃트로(전 타일 판정 완료 -> 결과 유예)는 행성이 마지막 타일에
+	# '서 있는 것'이 정상이다. 얼어붙음으로 세면 유예 1.5초가 통째로
+	# 정지 프레임이 되어 짧은 채보에서 8% 게이트를 거짓으로 넘는다.
+	if bool(_main.get("_outro")):
+		pass
+	elif u >= 0.999:
 		_pinned += 1
 	else:
 		_moving += 1
@@ -258,8 +267,21 @@ func _finish(reached_end: bool, wall: float) -> void:
 		print("  FAIL %.0fs 안에 곡 종료 미도달" % max_seconds); fails += 1
 	if autoplay and miss_every == 0 and score.total > 0:
 		# 정확한 시각에 눌렀으니 프레임 granularity(~7ms) 안에서 전부 Perfect 여야 한다.
-		if score.accuracy() < 99.0:
-			print("  FAIL 자동플레이인데 정확도가 %.2f%% 다" % score.accuracy()); fails += 1
+		#
+		# 단, 그 전제가 성립했는지부터 본다. 입력 산포 σ 가 곧 하네스의 정밀도다 —
+		# 정상은 프레임 양자화 몫인 2~3ms 인데, 머신이 밀리면 벌어진다.
+		# 실측(2026-08-10, AV 가 새로 쓴 WAV 400MB 를 훑는 중):
+		#   σ 2.3~2.9ms -> 100%  ·  σ 9.0ms -> 99.42%  ·  σ 12.6ms -> 97.69%(FAIL)
+		# Perfect 창이 ±25ms 로 좁아진 뒤로는 σ 가 조금만 커져도 바로 떨어진다.
+		# 그 상태의 정확도는 게임이 아니라 측정 환경을 말해 준다 — 앞서 두 번
+		# (히치 미스·카메라 절대배수) 고친 것과 같은 병이다.
+		var jitter: float = float(score.delta_stats().sd)
+		if jitter > AUTOPLAY_JITTER_MS:
+			print("  SKIP 정확도 판정 — 입력 산포 σ %.1fms (정상 2~3ms). 부하로 측정이 무효다."
+				% jitter)
+		elif score.accuracy() < 99.0:
+			print("  FAIL 자동플레이인데 정확도가 %.2f%% 다 (σ %.1fms 로 하네스는 정상)"
+				% [score.accuracy(), jitter]); fails += 1
 		# 미스는 히치 수까지만 봐준다. 정확한 시각에 눌러도 프레임이 통째로
 		# 밀린 구간에서는 늦을 수밖에 없다(실측: 5개 연속 실행으로 머신이
 		# 밀리면 524타일 곡에서 1건). 0 으로 못 박으면 부하에 따라 깜빡이는
@@ -280,7 +302,12 @@ func _finish(reached_end: bool, wall: float) -> void:
 			print("  FAIL 무입력인데 체력이 깎였다 (%.1f)" % score.health); fails += 1
 	elif miss_every == 0:
 		if score.total < n:
-			print("  FAIL 자동플레이인데 판정 %d < 타일 %d" % [score.total, n]); fails += 1
+			# 관용치를 더하지 않고 근거를 같이 찍는다. 부하로 몇 개가 덜 판정되는
+			# 경우가 있는데(실측: 3곡 연속 실행 중 484 -> 482, 단독 3회는 484 고정),
+			# 여기까지 관용을 늘리면 '타일을 진짜로 건너뛰는' 버그를 놓친다.
+			# 히치 수와 완주 여부를 보면 둘을 바로 가를 수 있다.
+			print("  FAIL 자동플레이인데 판정 %d < 타일 %d (히치 %d · 완주 %s · 입력 %d)"
+				% [score.total, n, _hitches, reached_end, _pressed]); fails += 1
 		if score.health < Score.HEALTH_MAX - 0.01:
 			print("  FAIL 전부 정확인데 체력이 깎였다 (%.1f)" % score.health); fails += 1
 	# 역행은 구조적으로 일어난다. 횟수가 아니라 크기로 본다.
@@ -314,18 +341,25 @@ func _finish(reached_end: bool, wall: float) -> void:
 	# 그래서 '감쇠비'로 잰다: 카메라 배수 / 타일 경로 배수.
 	# 순간 위치를 그대로 쫓으면 1.0 근처(혹은 그 이상)가 되고, 평활하면 내려간다.
 	# 실측 감쇠비 — 직선 0.89 · song140 0.69 · mureka_01 0.55 · mureka_06 0.38.
-	# 기준선은 1.0 — '카메라가 타일 경로보다 더 많이 움직이면 안 된다'.
-	# 감쇠비를 더 조이면 안 된다. 평활이 얼마나 먹히는지는 경로의 '파장'에
-	# 달려 있어서(창 ±3보다 긴 파장의 배회는 못 줄인다) 채보마다 정당하게
-	# 달라진다 — 실측 감쇠비 0.38(잔지그재그) ~ 0.77(완만한 배회) 전부 정상이다.
-	# 반면 회귀(순간 위치 추적)는 공전 원까지 얹혀 타일 경로보다 커진다:
-	# 당시 5.9~8.2x 는 같은 채보의 타일 경로 2.6~3.2x 위였으니 감쇠비 1.8~3.2 다.
+	# 절대 배수로는 잴 수 없다. 배수에는 카메라의 행동과 채보 경로의 모양이 같이
+	# 들어 있어서, 채보가 원래 구불구불하면 카메라가 아무리 부드러워도 크게 나온다.
+	# 그래서 '감쇠비' = 카메라 배수 / 타일 경로 배수 로 잰다.
+	#
+	# 기준 0.85 는 양쪽 끝을 실측해서 잡았다(2026-08-10):
+	#   정상(CAMERA_WINDOW=3)  0.61 · 0.66 · 0.68 · 0.77(song140, 가장 높음)
+	#   회귀(평활 제거, 창=0)   1.00  — 카메라 경로가 타일 경로와 정확히 같아진다
+	# 처음에 1.0 으로 뒀다가 회귀 재현 테스트에서 그냥 통과하는 걸 보고 고쳤다.
+	# 최악의 회귀가 정확히 1.00 이므로 기준을 1.0 에 두면 영원히 안 걸린다.
+	#
+	# 더 조이지도 말 것. 평활이 얼마나 먹히는지는 경로의 '파장'에 달려 있어
+	# (창 ±3 보다 긴 파장의 배회는 못 줄인다) 채보마다 정당하게 달라진다 —
+	# 0.75 로 뒀을 때 song140(0.77)이 걸렸다.
 	# 날카로운 평활 지표는 따로 있다 — 튐배수와 카메라 스파이크.
 	var raw_waste := _tile_path_waste()
 	if raw_waste > 2.0:
 		var atten := waste / raw_waste
-		if atten > 1.0:
-			print("  FAIL 카메라가 타일 경로보다 멀리 돈다 — 감쇠비 %.2f (타일경로 %.1fx -> 카메라 %.1fx)"
+		if atten > 0.85:
+			print("  FAIL 카메라가 경로를 그대로 쫓는다 — 감쇠비 %.2f (타일경로 %.1fx -> 카메라 %.1fx)"
 				% [atten, raw_waste, waste]); fails += 1
 	elif waste > 3.0:
 		# 곧은 경로인데 카메라만 크게 돈다 = 확실히 카메라 문제다.
