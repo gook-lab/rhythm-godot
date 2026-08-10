@@ -73,10 +73,33 @@ func _scan_charts() -> Array:
 	return out
 
 
+## 목록을 '선택 주변 창'으로만 그린다.
+##
+## 곡이 늘면 전부 그리던 목록이 화면을 넘는데, ↑↓ 로 선택은 되니까
+## '고를 수는 있지만 볼 수는 없는' 상태가 된다 — 실측(채보 24개):
+## 목록 1016px + 목록 외 238px = 1254px 가 720px 뷰포트에 들어가 16곡이 잘렸다.
+##
+## 9줄인 근거(실측): 곡 한 줄은 라벨 34px + 줄간격 8px = 42.3px, '더 있음' 표시는
+## 26+8 = 34px, 목록 외 UI 가 238px 이다. 가용 720-238 = 482px 에서 표시 두 줄(68)을
+## 빼면 414px = 9.8줄 -> 9줄. (줄간격을 빼먹고 12줄로 잡았다가 773px 로 넘쳤다.)
+## 레이아웃이나 곡 수가 바뀌면 SelectRunner 의 '목록이 화면 안에 들어온다' 가 잡는다.
+const VISIBLE_ROWS := 9
+
+
 func _rebuild() -> void:
 	for ch in _list.get_children():
+		# queue_free 만 하면 이번 프레임 동안 옛 줄과 새 줄이 같이 붙어 있어
+		# 컨테이너가 둘 다 배치한다 — 한 프레임 목록이 두 배로 늘었다 돌아온다.
+		# 트리에서 먼저 떼고 나서 해제한다.
+		_list.remove_child(ch)
 		ch.queue_free()
-	for i in range(_entries.size()):
+	# 선택을 가운데 두되, 목록 끝에서는 창을 끝에 붙인다(빈 줄을 만들지 않는다).
+	var lo := clampi(_sel - VISIBLE_ROWS / 2, 0,
+		maxi(0, _entries.size() - VISIBLE_ROWS))
+	var hi := mini(lo + VISIBLE_ROWS, _entries.size())
+	if lo > 0:
+		_list.add_child(_more_label("▲  위로 %d곡" % lo))
+	for i in range(lo, hi):
 		var e: Dictionary = _entries[i]
 		var l := Label.new()
 		var mark := "▶ " if i == _sel else "   "
@@ -90,6 +113,8 @@ func _rebuild() -> void:
 		else:
 			l.modulate = Color(0.55, 0.6, 0.72)
 		_list.add_child(l)
+	if hi < _entries.size():
+		_list.add_child(_more_label("▼  아래로 %d곡" % (_entries.size() - hi)))
 	if _entries.is_empty():
 		_info.text = "차트가 없다 — python3 tools/make_charts.py"
 		return
@@ -97,6 +122,15 @@ func _rebuild() -> void:
 	_info.text = "BPM %.0f   ·   타일 %d   ·   %d:%02d   ·   [M] 입력음 %s\n%s" % [
 		e.bpm, e.tiles, int(e.secs) / 60, int(e.secs) % 60,
 		"켬" if Records.sfx_enabled else "끔", _record_line(e.path)]
+
+
+## 창 위아래의 '더 있음' 표시. 곡 행보다 작고 흐리게 — 고를 수 없는 줄이기 때문이다.
+func _more_label(text: String) -> Label:
+	var l := Label.new()
+	l.text = "   " + text
+	l.add_theme_font_size_override("font_size", 18)
+	l.modulate = Color(0.42, 0.46, 0.56)
+	return l
 
 
 ## 목록 행 끝에 붙는 기록 요약. 클리어했으면 랭크가, 못 했으면 진행도가 성적표다.

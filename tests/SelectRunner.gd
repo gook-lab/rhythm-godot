@@ -68,5 +68,42 @@ func _ready() -> void:
 	sel._input(key(KEY_M))
 	ok(Records.sfx_enabled == was, "M 두 번 -> 원래대로")
 
+	# 목록이 화면을 넘지 않아야 한다. 넘으면 아래 곡들이 안 보이는데,
+	# ↑↓ 로 선택은 되니까 '고를 수는 있지만 볼 수는 없는' 상태가 된다 —
+	# 곡이 늘어야 드러나는 종류라 채보 수와 함께 자동으로 지키게 둔다.
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var vp := sel.get_viewport().get_visible_rect().size.y
+	var vbox: Control = sel.get_node("Margin/VBox")
+	var lst: Control = sel.get_node("Margin/VBox/List")
+	var row_h: float = (lst.get_child(0) as Control).size.y if lst.get_child_count() > 0 else 0.0
+	print("  목록 %d곡 · 리스트 %.0fpx (한 줄 %.0fpx) · VBox %.0fpx / 뷰포트 %.0fpx · 목록 외 %.0fpx"
+		% [lst.get_child_count(), lst.size.y, row_h, vbox.size.y, vp, vbox.size.y - lst.size.y])
+	ok(vbox.size.y <= vp,
+		"목록이 화면 안에 들어온다 (%.0f <= %.0f)" % [vbox.size.y, vp])
+
+	# 목록 창의 불변식: 어디를 고르든 '고른 줄이 실제로 그려져 있어야' 한다.
+	# 창 계산이 틀리면 선택은 되는데 화면에 없는 상태가 되고, 그건 목록이
+	# 넘쳐서 안 보이던 것과 증상이 똑같다.
+	var n := entries.size()
+	for target in [0, 1, n / 2, n - 2, n - 1]:
+		if target < 0 or target >= n:
+			continue
+		while int(sel.get("_sel")) > target:
+			sel._input(key(KEY_UP))
+		while int(sel.get("_sel")) < target:
+			sel._input(key(KEY_DOWN))
+		var want: String = entries[target].title
+		var shown := false
+		var rows := 0
+		for ch in sel.get_node("Margin/VBox/List").get_children():
+			var t: String = (ch as Label).text
+			if t.begins_with("▶ ") and t.contains(want):
+				shown = true
+			if not t.strip_edges().begins_with("▲") and not t.strip_edges().begins_with("▼"):
+				rows += 1
+		ok(shown, "%d번째 선택이 화면에 그려진다 (%s)" % [target, want])
+		ok(rows <= sel.VISIBLE_ROWS, "그려진 곡 줄 %d <= %d" % [rows, sel.VISIBLE_ROWS])
+
 	print("PASS" if _fails == 0 else "FAILED %d" % _fails)
 	get_tree().quit(_fails)
