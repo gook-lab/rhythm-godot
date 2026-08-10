@@ -38,9 +38,66 @@ func _init() -> void:
 	t_twirl()
 	t_health()
 	t_records()
+	t_planets()
 
 	print("\n%d passed, %d failed" % [_pass, _fail])
 	quit(_fail)
+
+
+## 삼행성 — 행성 수가 박자와 각도의 관계를 바꾼다.
+## 여기서 잠그는 것: (1) 오프셋 공식 (2) 기본값 2 가 예전과 완전히 같다
+## (3) 오프셋이 껴도 착지가 정확하다 (4) 요청한 박자가 그대로 벽시계가 된다.
+func t_planets() -> void:
+	print("삼행성 — 시작 오프셋 (P-2)*180/P")
+	eq(ChartRuntime.planet_offset_deg(2), 0.0, "2행성 -> 0도 (예전과 동일)")
+	eq(ChartRuntime.planet_offset_deg(3), 60.0, "3행성 -> 60도")
+	eq(ChartRuntime.planet_offset_deg(4), 90.0, "4행성 -> 90도")
+	eq(ChartRuntime.planet_offset_deg(1), 0.0, "1 이하는 2로 취급")
+
+	print("삼행성 — 직선 타일이 1박이 아니라 2/3박")
+	eq(ChartRuntime.beats_for_tile(0.0, 0.0, 1, false, 0.0), 1.0, "2행성 직선 = 1박")
+	eq(ChartRuntime.beats_for_tile(0.0, 0.0, 1, false, 60.0), 2.0 / 3.0,
+		"3행성 직선 = 2/3박")
+
+	print("삼행성 — 착지 불변식 (오프셋이 껴도 성립)")
+	const R := 96.0
+	var angles := PackedFloat32Array([0.0, 60.0, 120.0, 180.0, 240.0, 300.0, 0.0])
+	var pos := ChartRuntime.tile_positions(angles, R)
+	var worst := 0.0
+	for off in [0.0, 60.0, 90.0]:
+		for spin in [1, -1]:
+			for mid in [false, true]:
+				for i in range(1, angles.size()):
+					var a := ChartRuntime.orbit_start_deg(angles, i, mid, off)
+					var sw := ChartRuntime.orbit_sweep_deg(angles, i, spin, mid, off)
+					var e := deg_to_rad(a + sw)
+					var landed: Vector2 = pos[i - 1] + Vector2(cos(e), -sin(e)) * R
+					worst = maxf(worst, landed.distance_to(pos[i]))
+	ok(worst < 0.01, "오프셋 x spin x 중간회전 12조합 최대 오차 %.4fpx" % worst)
+
+	print("삼행성 — 생성기가 만든 채보의 벽시계가 요청한 박자와 맞는다")
+	var c: Chart = load("res://charts/t07_three.tres")
+	if c == null:
+		ok(false, "t07_three.tres 없음 — python3 tools/make_charts.py 를 먼저")
+		return
+	ok(c.planet_count == 3, "planet_count 3 (%d)" % c.planet_count)
+	var h := ChartRuntime.hit_times_ms(c)
+	# 요청한 홉이 전부 1박(120bpm -> 500ms)이었다. 첫 홉만 기하상 2/3박이다.
+	var bad := 0
+	for i in range(2, h.size()):
+		if absf((h[i] - h[i - 1]) - 500.0) > 1.0:
+			bad += 1
+	ok(bad == 0, "요청한 1박 홉이 전부 500ms (어긋난 홉 %d개)" % bad)
+	# hit_times 는 PackedFloat32Array 라 저장 자체가 float32 다.
+	# 333.3333... 은 그 격자에 정확히 안 앉는다(한 칸 3e-5ms) — 정밀도지 오류가 아니다.
+	eq(h[1] - h[0], 500.0 * 2.0 / 3.0, "첫 홉은 기하상 2/3박", 1e-3)
+
+	print("삼행성 — 기본값 2 는 예전 계산과 한 치도 안 다르다")
+	var c2 := make_chart([0.0, 90.0, 0.0, 270.0, 0.0])
+	var h2 := ChartRuntime.hit_times_ms(c2)
+	ok(c2.planet_count == 2, "기본 행성 수 2")
+	eq(h2[1] - h2[0], 500.0, "직선 1박")
+	eq(h2[2] - h2[1], 750.0, "90도 1.5박")
 
 
 # ---------------------------------------------------------------- 도우미
@@ -150,6 +207,25 @@ func t_monotonic() -> void:
 	ok(mono, "200타일 무작위 각도에서 단조증가")
 	ok(h.size() == 200, "길이 보존")
 
+	# 누적 정밀도. hit_times 는 PackedFloat32Array 라서, out[i-1] 을 되읽어
+	# 더하면 매 타일 float32 로 반올림되고 그 오차가 무작위 보행으로 쌓인다.
+	# 긴 곡에서만 드러난다 — 실측(mureka_08, 200초 848타일)에서 1.011ms 까지
+	# 벌어져 엔진 교차검증 허용치 1.5ms 에 붙었다. 누적을 double 로 바꾼 뒤
+	# 0.0078ms(= 그 지점 float32 한 칸)로 떨어졌고 곡 길이와 무관해졌다.
+	#
+	# 직선 900타일을 double 로 직접 적분한 값과 대조한다. 누적이 float32 로
+	# 되돌아가면 여기가 즉시 깨진다.
+	var straight: Array = []
+	for i in range(900):
+		straight.append(0.0)
+	var hs := ChartRuntime.hit_times_ms(make_chart(straight, 137.0, 1234.5))
+	var step := 60000.0 / 137.0          # 직선은 전부 1박
+	var worst_err := 0.0
+	for i in range(hs.size()):
+		worst_err = maxf(worst_err, absf(hs[i] - (1234.5 + step * i)))
+	ok(worst_err < 0.05,
+		"900타일 누적 오차 %.4fms — float32 로 누적하면 1ms 급으로 벌어진다" % worst_err)
+
 
 func t_tile_positions() -> void:
 	print("타일 좌표 — 렌더도 같은 각도 배열에서 파생된다")
@@ -196,6 +272,47 @@ func t_landing() -> void:
 			var landed := pivot + Vector2(cos(end), -sin(end)) * R
 			worst = maxf(worst, landed.distance_to(pos[i]))
 		ok(worst < 0.01, "%s — 최대 착지 오차 %.4f px" % [name, worst])
+
+	# 중간회전은 공전 '시작각'을 180도 옮긴다. 끝각은 정의상 angles[i-1] 이라
+	# 착지는 그대로여야 하는데, 시작각과 스윕을 따로 고치면 여기서 어긋난다.
+	# spin 과 조합해도(4가지) 전부 성립해야 한다.
+	print("착지 불변식 — 중간회전·twirl 을 섞어도 성립한다")
+	for name in cases:
+		var angles := PackedFloat32Array(cases[name])
+		var pos := ChartRuntime.tile_positions(angles, R)
+		var worst := 0.0
+		for spin in [1, -1]:
+			for mid in [false, true]:
+				for i in range(1, angles.size()):
+					var pivot: Vector2 = pos[i - 1]
+					var a := ChartRuntime.orbit_start_deg(angles, i, mid)
+					var s := ChartRuntime.orbit_sweep_deg(angles, i, spin, mid)
+					var end := deg_to_rad(a + s)
+					var landed := pivot + Vector2(cos(end), -sin(end)) * R
+					worst = maxf(worst, landed.distance_to(pos[i]))
+		ok(worst < 0.01, "%s — spin x 중간회전 4조합 최대 오차 %.4f px" % [name, worst])
+
+	print("중간회전 — 같은 기하가 다른 박자가 된다 (그 반대도)")
+	# 직선 배열: 보통이면 1박, 중간회전이면 sweep 0 = U턴 취급이라 2박.
+	eq(ChartRuntime.beats_for_tile(0.0, 0.0, 1, false), 1.0, "직선 · 보통 = 1박")
+	eq(ChartRuntime.beats_for_tile(0.0, 0.0, 1, true), 2.0, "직선 · 중간회전 = 2박")
+	eq(ChartRuntime.beats_for_tile(0.0, 180.0, 1, false), 2.0, "U턴 · 보통 = 2박")
+	eq(ChartRuntime.beats_for_tile(0.0, 180.0, 1, true), 1.0, "U턴 · 중간회전 = 1박")
+	# 0.25박(45도 스윕)에서 진행방향 변화가 225도 -> 45도 로 완만해진다.
+	# 이 차이가 촘촘한 구간의 코일을 푼다.
+	eq(ChartRuntime.beats_for_tile(0.0, 225.0, 1, false), 0.25, "0.25박 · 보통")
+	eq(ChartRuntime.beats_for_tile(0.0, 45.0, 1, true), 0.25, "0.25박 · 중간회전")
+
+	print("중간회전 — hit_times 에 반영된다")
+	var cm := make_chart([0.0, 0.0, 0.0, 0.0])
+	var t_plain := ChartRuntime.hit_times_ms(cm)
+	cm.midspin_tiles = PackedInt32Array([2])
+	var t_mid := ChartRuntime.hit_times_ms(cm)
+	eq(t_mid[1], t_plain[1], "중간회전 앞 타일은 그대로")
+	eq(t_mid[2] - t_mid[1], (t_plain[2] - t_plain[1]) * 2.0,
+		"중간회전 타일은 1박(직선) 대신 2박이 된다")
+	ok(ChartRuntime.is_midspin(cm, 2) and not ChartRuntime.is_midspin(cm, 1),
+		"is_midspin 은 그 타일만 (누적 아님)")
 
 
 func t_beats_to_reach() -> void:
@@ -478,7 +595,8 @@ func t_health() -> void:
 	var h0 := s.health
 	s.on_judged(Judge.Verdict.TOO_LATE, INF, 1)
 	ok(s.health < h0, "미스로 체력 감소 (%.1f -> %.1f)" % [h0, s.health])
-	eq(h0 - s.health, Score.DMG_MISS, "감소량이 DMG_MISS")
+	eq(h0 - s.health, Score.DMG_MISS_PER_SEC * s.interval_sec,
+		"감소량 = 초당 데미지 x 그 타일이 차지한 시간")
 
 	print("체력 — 잘 치면 돌아온다")
 	s.reset()
@@ -496,12 +614,44 @@ func t_health() -> void:
 	s.reset()
 	s.on_judged(Judge.Verdict.PERFECT, 0.0, 0)
 	var n := 0
-	while not s.is_dead() and n < 200:
+	while not s.is_dead() and n < 400:
 		s.on_judged(Judge.Verdict.TOO_LATE, INF, n)
 		n += 1
 	ok(s.is_dead(), "연속 미스로 사망")
-	# 100 체력 / 7 데미지 = 15연속. 정확 1회분 회복(+1.6)을 감안해 15~16.
-	ok(n >= 14 and n <= 17, "%d 연속 미스에 사망 (14~17 기대)" % n)
+	# 기본 간격 0.5초 x 12.5 = 6.25 데미지. 정확 1회분 회복을 감안해 16~18회.
+	ok(n >= 15 and n <= 19, "%d 연속 미스에 사망 (15~19 기대)" % n)
+
+	# 이게 이 규칙의 존재 이유다. 밀도가 두 배여도 '죽기까지 걸리는 시간'은
+	# 그대로여야 한다 — 안 그러면 촘촘한 곡이 시작하자마자 결과창이 뜬다
+	# (실측 회귀: 초당 2.0 -> 3.5탭에서 7.5초 -> 4.2초).
+	print("체력 — 사망까지 걸리는 '시간'은 밀도와 무관하다")
+	var secs: Array[float] = []
+	for gap in [0.5, 0.28, 0.18]:
+		s.reset()
+		s.interval_sec = gap
+		s.on_judged(Judge.Verdict.PERFECT, 0.0, 0)
+		var k := 0
+		while not s.is_dead() and k < 2000:
+			s.on_judged(Judge.Verdict.TOO_LATE, INF, k)
+			k += 1
+		secs.append(k * gap)
+		ok(s.is_dead(), "  간격 %.2fs — %d미스 = %.1f초에 사망" % [gap, k, k * gap])
+	var spread: float = secs.max() - secs.min()
+	ok(spread < 1.0,
+		"세 밀도의 사망 시간 편차 %.2f초 (< 1.0 기대: %.1f / %.1f / %.1f)"
+		% [spread, secs[0], secs[1], secs[2]])
+
+	# 간격 자르기: 걸음 타일(1.8초) 하나에 체력이 통째로 날아가면 안 된다.
+	print("체력 — 아주 긴/짧은 간격은 잘린다")
+	s.reset()
+	s.interval_sec = 5.0
+	s.on_judged(Judge.Verdict.PERFECT, 0.0, 0)
+	var before_h: float = s.health
+	s.on_judged(Judge.Verdict.TOO_LATE, INF, 1)
+	var dmg: float = before_h - s.health
+	ok(dmg <= Score.DMG_MISS_PER_SEC * Score.INTERVAL_MAX + 0.01,
+		"5초 간격도 상한(%.1f)까지만 깎인다 (%.1f)"
+		% [Score.DMG_MISS_PER_SEC * Score.INTERVAL_MAX, dmg])
 
 	print("체력 — 리셋")
 	s.reset()

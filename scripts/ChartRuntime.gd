@@ -49,9 +49,13 @@ static func normalize360(deg: float) -> float:
 ## 방향이 반대면 같은 기하가 다른 박자가 되고, 거꾸로 같은 박자가 반대로 꺾인다:
 ##   0.5박 -> CCW 는 prev-90(우회전) · CW 는 prev+90(좌회전)
 ## 착지 불변식은 양쪽 다 성립한다 — 끝각이 어느 쪽이든 angles[i-1] 이다.
-static func beats_for_tile(prev: float, cur: float, spin: int = 1) -> float:
-	var sweep := normalize360(cur - (prev + 180.0)) if spin >= 0 \
-		else normalize360((prev + 180.0) - cur)
+## mid = true 면 중간회전이다. 공전이 반대쪽에서 시작하므로 기준각에서 180 을 뺀다
+## (Chart.midspin_tiles 주석 참조). 박자는 여전히 스윕/180 이고 착지도 그대로다.
+static func beats_for_tile(prev: float, cur: float, spin: int = 1,
+		mid: bool = false, offset: float = 0.0) -> float:
+	var base := (prev if mid else prev + 180.0) + offset
+	var sweep := normalize360(cur - base) if spin >= 0 \
+		else normalize360(base - cur)
 	# U턴(제자리)은 sweep 이 정확히 0 = 360 인 경우다. 그런데 이 값은
 	# fposmod 의 경계 위에 정확히 얹혀 있어서, 각도에 0.001도만 오차가 섞여도
 	# 0.0006(-> 0.0박) 과 359.9994(-> 2.0박) 로 갈린다. 같은 U턴이 정반대가 된다.
@@ -82,10 +86,51 @@ static func incoming_deg(angles: PackedFloat32Array, i: int) -> float:
 
 
 ## 타일 i 에 도달하는 데 걸리는 박자.
-static func beats_to_reach(angles: PackedFloat32Array, i: int, spin: int = 1) -> float:
+static func beats_to_reach(angles: PackedFloat32Array, i: int, spin: int = 1,
+		mid: bool = false, offset: float = 0.0) -> float:
 	if i <= 0 or i >= angles.size():
 		return 0.0
-	return beats_for_tile(incoming_deg(angles, i), angles[i - 1], spin)
+	return beats_for_tile(incoming_deg(angles, i), angles[i - 1], spin, mid, offset)
+
+
+## 행성 P개일 때 공전 시작 오프셋(도). 원작과 같은 식이다.
+##   P=2 -> 0  ·  P=3 -> 60  ·  P=4 -> 90
+## 도는 행성이 정반대(180도)가 아니라 그보다 offset 만큼 더 돌아간 데서 출발한다.
+## 스윕이 그만큼 짧아지므로 같은 기하가 더 적은 박자가 된다(직선: 1박 -> 2/3박).
+static func planet_offset_deg(count: int) -> float:
+	var p := maxi(count, 2)
+	return float(p - 2) * 180.0 / float(p)
+
+
+static func chart_offset_deg(chart: Chart) -> float:
+	return planet_offset_deg(chart.planet_count) if chart != null else 0.0
+
+
+## 타일 t 에서 홀드로 더 도는 바퀴 수(0 이면 홀드 아님).
+static func hold_orbits_at(chart: Chart, tile: int) -> float:
+	if chart == null:
+		return 0.0
+	for k in range(chart.hold_tiles.size()):
+		var h := chart.hold_tiles[k]
+		if int(h.x) == tile and h.y > 0.0:
+			return h.y
+	return 0.0
+
+
+## 홀드로 추가되는 박자. 한 바퀴 = 360도 = 2박이다.
+## 360도의 배수라 착지가 안 바뀐다 — 경로 기하는 홀드와 무관하다.
+static func hold_beats_at(chart: Chart, tile: int) -> float:
+	return hold_orbits_at(chart, tile) * 2.0
+
+
+## 타일 i 가 중간회전인가. twirl 과 달리 누적이 아니라 그 타일만의 성질이다.
+static func is_midspin(chart: Chart, tile: int) -> bool:
+	if chart == null:
+		return false
+	for k in range(chart.midspin_tiles.size()):
+		if chart.midspin_tiles[k] == tile:
+			return true
+	return false
 
 
 ## 타일에서의 회전 방향. +1 = 반시계(기본), -1 = 시계.
@@ -134,13 +179,25 @@ static func hit_times_ms(chart: Chart) -> PackedFloat32Array:
 		return out
 
 	out.resize(chart.angles.size())
-	out[0] = chart.start_offset_ms  # 타일 0 = 출발점, 판정 없음
 	var spb := 60000.0 / chart.bpm  # ms per beat (배속 1.0 기준)
+	# 누적은 double 로 한다. out 은 PackedFloat32Array 라서 out[i-1] 을 되읽어
+	# 더하면 매 타일 float32 로 반올림되고, 그 오차가 무작위 보행으로 쌓인다 —
+	# 200초 곡(200,000ms)에서 float32 한 칸이 ~0.03ms 이고 800타일이면
+	# 0.03*sqrt(800) ≈ 0.85ms. 실측 mureka_08 이 1.011ms 로 허용치 1.5ms 에
+	# 붙어 있었던 이유가 이것이다. 저장값은 그대로 float32 지만 누적을 double 로
+	# 두면 오차가 '쌓이지 않고' 각 항의 마지막 반올림 하나로 끝난다.
+	var off := chart_offset_deg(chart)
+	var t := float(chart.start_offset_ms)
+	out[0] = t  # 타일 0 = 출발점, 판정 없음
 	for i in range(1, chart.angles.size()):
 		# 타일 i 로 가는 공전은 축이 타일 i-1 이므로, 그 타일의 배속과 회전방향을 따른다.
 		var mult := speed_mult_at(chart, i - 1)
 		var spin := spin_at(chart, i - 1)
-		out[i] = out[i - 1] + beats_to_reach(chart.angles, i, spin) * spb / mult
+		# 홀드는 '떠나기 전에 제자리에서 더 도는' 시간이라 축 타일(i-1)에 붙는다.
+		# 이 게임에서 히트타임을 뒤로 미는 유일한 타일이다.
+		t += (beats_to_reach(chart.angles, i, spin, is_midspin(chart, i), off)
+			+ hold_beats_at(chart, i - 1)) * spb / mult
+		out[i] = t
 	return out
 
 
@@ -160,16 +217,19 @@ static func tile_positions(angles: PackedFloat32Array, spacing: float) -> Packed
 
 
 ## 타일 i 로 가는 공전의 시작 각도(도). 축(타일 i-1)에서 본 타일 i-2 의 방향이다.
-static func orbit_start_deg(angles: PackedFloat32Array, i: int) -> float:
+static func orbit_start_deg(angles: PackedFloat32Array, i: int,
+		mid: bool = false, offset: float = 0.0) -> float:
 	if i <= 0 or i >= angles.size():
 		return 0.0
-	return normalize360(incoming_deg(angles, i) + 180.0)
+	return normalize360(incoming_deg(angles, i) + (0.0 if mid else 180.0) + offset)
 
 
 ## 타일 i 로 가는 공전의 스윕각(도). 부호가 회전 방향이다.
 ## CW(twirl) 이면 음수 — 렌더가 반대로 돌아야 착지가 맞는다.
-static func orbit_sweep_deg(angles: PackedFloat32Array, i: int, spin: int = 1) -> float:
-	return beats_to_reach(angles, i, spin) * 180.0 * (1.0 if spin >= 0 else -1.0)
+static func orbit_sweep_deg(angles: PackedFloat32Array, i: int, spin: int = 1,
+		mid: bool = false, offset: float = 0.0) -> float:
+	return beats_to_reach(angles, i, spin, mid, offset) * 180.0 \
+		* (1.0 if spin >= 0 else -1.0)
 
 
 ## 공전이 끝나는 각도. 정의상 반드시 angles[i-1] 이어야 하고,

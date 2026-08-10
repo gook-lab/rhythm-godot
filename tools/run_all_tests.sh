@@ -20,32 +20,38 @@ if [ ! -f assets/hit.wav ] || [ ! -f assets/test_song.expected.json ]; then
 	exit 1
 fi
 
-step "0/8 임포트"
+step "0/10 임포트"
 [ -n "$SKIP_IMPORT" ] || "$GODOT" --headless --import >/dev/null 2>&1
 
-step "1/8 midilib (Python 단독 — 손으로 깎은 SMF 바이트)"
+step "1/10 midilib (Python 단독 — 손으로 깎은 SMF 바이트)"
 python3 tools/test_midilib.py
 
-step "2/8 단위 (ChartRuntime 순수 함수)"
+step "2/10 단위 (ChartRuntime 순수 함수)"
 "$GODOT" --headless --script res://tests/run_tests.gd
 
-step "3/8 스모크: 무입력 (감시자 전부-미스 경로)"
+step "3/10 스모크: 무입력 (감시자 전부-미스 경로)"
 "$GODOT" --headless --audio-driver CoreAudio res://tests/SmokeScene.tscn
 
-step "4/8 스모크: 오토플레이 (판정 체인 전체)"
+step "4/10 스모크: 오토플레이 (판정 체인 전체)"
 "$GODOT" --headless --audio-driver CoreAudio res://tests/SmokeScene.tscn -- --autoplay
 
-step "5/8 스모크: 드문 미스 / 잦은 미스 (체력 회복·사망 경로)"
+step "5/10 스모크: 드문 미스 / 잦은 미스 (체력 회복·사망 경로)"
 "$GODOT" --headless --audio-driver CoreAudio res://tests/SmokeScene.tscn -- --autoplay --miss-every=5
 "$GODOT" --headless --audio-driver CoreAudio res://tests/SmokeScene.tscn -- --autoplay --miss-every=2
 
-step "6/8 조작 표면 (등급·echo·R재시작·일시정지)"
+step "6/10 조작 표면 (등급·echo·R재시작·일시정지)"
 "$GODOT" --headless --audio-driver CoreAudio res://tests/InputScene.tscn
 
-step "7/8 곡 선택"
+step "7/10 체크포인트 부활 (seek 후 클럭이 계속 흐르는가)"
+"$GODOT" --headless --audio-driver CoreAudio res://tests/CheckpointScene.tscn
+
+step "8/10 홀드 (누름·뗌 2판정, 히트타임 지연, 착지 불변)"
+"$GODOT" --headless --audio-driver CoreAudio res://tests/HoldScene.tscn
+
+step "9/10 곡 선택"
 "$GODOT" --headless res://tests/SelectScene.tscn
 
-step "8/8 교차 언어 채보 검증 (MIDI 픽스처, 엔진 vs 적분 정답)"
+step "10/10 교차 언어 채보 검증 (MIDI 픽스처, 엔진 vs 적분 정답)"
 "$GODOT" --headless --script res://tests/verify_chart.gd -- --chart=res://charts/test_song.tres
 
 printf '\n\033[1;32m전부 통과\033[0m\n'

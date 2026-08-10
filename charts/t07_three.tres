@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="Chart" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/Chart.gd" id="1_chart"]
+[ext_resource type="AudioStream" path="res://assets/click_120.wav" id="2_audio"]
+
+[resource]
+script = ExtResource("1_chart")
+bpm = 120
+planet_count = 3
+angles = PackedFloat32Array(0, 60, 120, 180, 240, 300, 0, 60, 60)
+start_offset_ms = 2000
+audio = ExtResource("2_audio")
+title = "07 삼행성"

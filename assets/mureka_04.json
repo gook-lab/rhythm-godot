@@ -695,5 +695,6 @@
  "melody_only_count": 168,
  "fill_above_beats": 1.0,
  "min_add_gap_ms": 150.0,
- "taps_per_sec": 3.9642501020137
+ "taps_per_sec": 3.9642501020137,
+ "speed_display_beats": []
 }

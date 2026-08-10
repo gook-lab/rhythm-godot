@@ -13,6 +13,14 @@ extends Node
 ## 단위 테스트가 못 잡는 것을 본다:
 ##   감시자가 무입력 Miss 로 실제 전진하는가 · 곡 종료에 도달하는가 · 클럭 역행 크기
 
+## 자동플레이 앞보기 상한(ms). Judge 의 Perfect 창(±30ms) 절반 아래로 둔다 —
+## 보정이 판정을 흔들면 안 된다. 144fps 의 정상 보정치는 10.4ms 라 안 걸린다.
+const MAX_LOOKAHEAD_MS := 15.0
+
+## 이보다 긴 프레임은 '히치'로 센다. 144fps 정상 프레임이 6.9ms 이므로
+## 25ms 는 3배 이상 밀린 것 — 머신 부하지 게임 문제가 아니다.
+const HITCH_MS := 25.0
+
 ## 기본 상한. 긴 곡은 --max-sec= 로 늘린다 (mureka 곡 149초).
 var max_seconds := 95.0
 
@@ -44,6 +52,7 @@ var _seen_first := Vector2.INF
 var _seen_last := Vector2.ZERO
 var _seen_path := 0.0
 var _shaking := 0                     # 카메라와 도는 행성 사이 최대 거리
+var _hitches := 0                     # delta 가 크게 튄 프레임 수 (미스의 알리바이)
 
 
 func _ready() -> void:
@@ -80,8 +89,12 @@ func _ready() -> void:
 	print("  경과(s)  클럭(ms)  타일  판정  역행")
 
 
-func _process(_d: float) -> void:
+func _process(delta: float) -> void:
 	_frames += 1
+	# 프레임이 크게 밀린 순간. 그 사이에 히트타임이 들어오면 자동플레이는
+	# 아무리 정확해도 늦게 누를 수밖에 없다 — 미스 허용치의 근거가 된다.
+	if delta > HITCH_MS / 1000.0:
+		_hitches += 1
 	var wall := float(Time.get_ticks_usec() - _t0) / 1_000_000.0
 	var idx: int = _main.get("_idx")
 	# 렌더가 얼어 있는지 잰다. 렌더 커서를 판정 커서에 묶어두면
@@ -115,11 +128,30 @@ func _process(_d: float) -> void:
 	_far = maxf(_far, cam.distance_to(pair.get_node("PlanetA").position))
 	_far = maxf(_far, cam.distance_to(pair.get_node("PlanetB").position))
 
-	# 자동 플레이: 해당 타일의 시각이 지나면 스페이스를 한 번 보낸다.
+	# 자동 플레이: 해당 타일의 시각에 맞춰 스페이스를 한 번 보낸다.
+	#
+	# '지금 시각이 히트타임을 넘었으면' 누르면 안 된다. 두 가지가 겹쳐 늦어진다:
+	#   1. 프레임 양자화 — 평균 +½프레임
+	#   2. parse_input_event 는 큐에 쌓여 '다음 프레임'에 배달된다 — +1프레임
+	# 합쳐서 평균 +1.5프레임. 실측 145fps 에서 정확히 +10.4ms 였고, 헤드리스를
+	# 32000fps 로 돌리면 +0.3ms 로 사라져 프레임 탓임이 확인됐다.
+	# 이건 하네스의 지연이지 게임의 지연이 아니다 — 실제 키 입력은 OS 가
+	# 발생 시각을 찍어 준다. 그대로 두면 촘촘한 곡에서 판정창이 좁아질 때
+	# '자동플레이인데 정확도 95%' 라는 거짓 실패가 나서 진짜 회귀를 가린다.
+	#
+	# 보정: 프레임 k 에서 C_k + aD >= ht 일 때 누르면 배달은 C_k+D 이므로
+	# 평균 오차가 (1.5-a)D 가 된다. a=0 이면 +1.5D(원래), a=1.5 면 0 이다.
+	# 실측으로 확인했다: a=0 -> +10.4ms · a=1 -> +3.5ms · 145fps(D=6.9ms).
 	if autoplay and AudioClock.is_warm():
 		var ht: PackedFloat32Array = _main.get("_hit_times")
 		var ji: int = _main.get("_idx")
-		if ji < ht.size() and float(AudioClock.judged_ms()) >= ht[ji]:
+		# 앞보기는 상한을 둔다. 프레임이 한 번 크게 튀면(부하·로딩) delta 가
+		# 커지면서 그만큼 '일찍' 눌러 버려 멀쩡한 타일이 미스가 된다 —
+		# 실측: 5개를 연달아 돌려 머신이 밀렸을 때 같은 채보가 P/100% 에서
+		# D/64.7%(미스 43) 으로 무너졌고, 단독 실행에서는 재현되지 않았다.
+		# 히치 뒤에는 어차피 정확히 맞출 수 없으니, 조금 늦는 쪽이 옳다.
+		var look: float = minf(delta * 1500.0, MAX_LOOKAHEAD_MS)
+		if ji < ht.size() and float(AudioClock.judged_ms()) + look >= ht[ji]:
 			var skip := miss_every > 0 and ji % miss_every == 0
 			if not skip:
 				var ev := InputEventKey.new()
@@ -150,6 +182,23 @@ func _process(_d: float) -> void:
 		_finish(fin, wall)
 
 
+## 채보의 타일 경로 자체가 얼마나 헤매는가. 카메라 배수의 기준선이 된다.
+func _tile_path_waste() -> float:
+	# get() 결과를 타입 지정 변수에 바로 넣지 않는다. 종료 중이거나 Main 이
+	# 유효하지 않으면 Nil 이 와서 'Nil 을 PackedVector2Array 에 대입' 으로 죽는다 —
+	# SIGTERM 으로 스위트가 끊겼을 때 같은 모양의 에러가 실제로 났다.
+	var raw = _main.get("_positions") if is_instance_valid(_main) else null
+	if not (raw is PackedVector2Array):
+		return 1.0
+	var pos: PackedVector2Array = raw
+	if pos.size() < 2:
+		return 1.0
+	var d := 0.0
+	for i in range(1, pos.size()):
+		d += pos[i - 1].distance_to(pos[i])
+	return d / maxf(pos[0].distance_to(pos[pos.size() - 1]), 1.0)
+
+
 func _finish(reached_end: bool, wall: float) -> void:
 	set_process(false)
 	var score: Score = _main.get_node("Score")
@@ -165,6 +214,7 @@ func _finish(reached_end: bool, wall: float) -> void:
 			% [score.rank(), score.accuracy(), score.max_combo,
 			   st2.n, st2.mean, st2.sd])
 	print("  체력 %.1f / %.0f · started %s" % [score.health, Score.HEALTH_MAX, score.started])
+	print("  프레임 히치 %d회 (>%.0fms)" % [_hitches, HITCH_MS])
 	print("  클럭 역행 %d회 · 최대 %.3fms" % [int(AudioClock.clamp_hits),
 		float(AudioClock.max_backstep_ms)])
 	# 카메라 부드러움: 프레임당 이동량의 중앙값 대비 최대값.
@@ -199,9 +249,15 @@ func _finish(reached_end: bool, wall: float) -> void:
 		# 정확한 시각에 눌렀으니 프레임 granularity(~7ms) 안에서 전부 Perfect 여야 한다.
 		if score.accuracy() < 99.0:
 			print("  FAIL 자동플레이인데 정확도가 %.2f%% 다" % score.accuracy()); fails += 1
-		if score.count_of(Judge.Verdict.TOO_LATE) > 0:
-			print("  FAIL 자동플레이인데 미스가 %d 건"
-				% score.count_of(Judge.Verdict.TOO_LATE)); fails += 1
+		# 미스는 히치 수까지만 봐준다. 정확한 시각에 눌러도 프레임이 통째로
+		# 밀린 구간에서는 늦을 수밖에 없다(실측: 5개 연속 실행으로 머신이
+		# 밀리면 524타일 곡에서 1건). 0 으로 못 박으면 부하에 따라 깜빡이는
+		# 테스트가 되고, 깜빡이는 테스트는 곧 무시당한다.
+		# 반대로 히치가 없는데 미스가 나면 그건 진짜다.
+		var misses := score.count_of(Judge.Verdict.TOO_LATE)
+		if misses > _hitches:
+			print("  FAIL 자동플레이인데 미스가 %d 건 (히치 %d 프레임으로 설명 안 됨)"
+				% [misses, _hitches]); fails += 1
 	# 실패는 체력으로 판정한다. 그리고 한 번도 안 누른 플레이어는 체력이 안 깎인다
 	# (Score.started) — 보고만 있는 걸 실패로 치면 안 되기 때문이다.
 	# 따라서 무입력은 '전부 미스지만 완주' 가 정상이다.
@@ -237,14 +293,38 @@ func _finish(reached_end: bool, wall: float) -> void:
 	if spike_pct > 0.3:
 		print("  FAIL 카메라 스파이크가 %.2f%% — 산발적 히치가 아니라 구조적이다"
 			% spike_pct); fails += 1
-	# 흔들림. 순간 위치를 쫓으면 경로의 지그재그를 그대로 따라가 5.9~8.2x 가 된다.
-	# 타깃이 지그재그를 그대로 쫓는지 (순간 위치 추적이면 5.9~8.2x)
-	if waste > 3.0:
-		print("  FAIL 카메라 타깃 낭비 %.2fx — 지그재그를 그대로 쫓고 있나?"
-			% waste); fails += 1
+	# 카메라가 경로를 '그대로 쫓는지'는 절대 배수로 잴 수 없다. 배수에는
+	# 카메라의 행동과 채보 경로의 모양이 같이 들어 있기 때문이다 — 채보가
+	# 원래 구불구불하면 카메라가 아무리 부드러워도 절대값은 크게 나온다.
+	# 실측(2026-08-10): mureka_06 은 타일 경로 자체가 22.5x 인데 카메라는 8.5x 로
+	# 줄여 놓고도 절대 기준 3.0 에 걸렸다. 창을 ±2에서 ±12로 넓혀도 9.4->6.0 에
+	# 그치고 행성만 402px 멀어졌다 — 카메라의 문제가 아니라는 뜻이다.
+	#
+	# 그래서 '감쇠비'로 잰다: 카메라 배수 / 타일 경로 배수.
+	# 순간 위치를 그대로 쫓으면 1.0 근처(혹은 그 이상)가 되고, 평활하면 내려간다.
+	# 실측 감쇠비 — 직선 0.89 · song140 0.69 · mureka_01 0.55 · mureka_06 0.38.
+	# 기준선은 1.0 — '카메라가 타일 경로보다 더 많이 움직이면 안 된다'.
+	# 감쇠비를 더 조이면 안 된다. 평활이 얼마나 먹히는지는 경로의 '파장'에
+	# 달려 있어서(창 ±3보다 긴 파장의 배회는 못 줄인다) 채보마다 정당하게
+	# 달라진다 — 실측 감쇠비 0.38(잔지그재그) ~ 0.77(완만한 배회) 전부 정상이다.
+	# 반면 회귀(순간 위치 추적)는 공전 원까지 얹혀 타일 경로보다 커진다:
+	# 당시 5.9~8.2x 는 같은 채보의 타일 경로 2.6~3.2x 위였으니 감쇠비 1.8~3.2 다.
+	# 날카로운 평활 지표는 따로 있다 — 튐배수와 카메라 스파이크.
+	var raw_waste := _tile_path_waste()
+	if raw_waste > 2.0:
+		var atten := waste / raw_waste
+		if atten > 1.0:
+			print("  FAIL 카메라가 타일 경로보다 멀리 돈다 — 감쇠비 %.2f (타일경로 %.1fx -> 카메라 %.1fx)"
+				% [atten, raw_waste, waste]); fails += 1
+	elif waste > 3.0:
+		# 곧은 경로인데 카메라만 크게 돈다 = 확실히 카메라 문제다.
+		print("  FAIL 카메라 타깃 낭비 %.2fx — 곧은 경로(%.1fx)인데 카메라가 돈다"
+			% [waste, raw_waste]); fails += 1
 	# 실제로 보이는 흔들림. 미스마다 흔들던 시절엔 18.01x 였다.
-	if seen_waste > 4.0:
-		print("  FAIL 화면 흔들림 낭비 %.2fx — 흔들림이 과하다" % seen_waste); fails += 1
+	# 흔들림은 타깃 위에 얹히는 것이므로 타깃 대비로 본다.
+	if seen_waste > waste * 1.35 + 0.5:
+		print("  FAIL 화면 흔들림 낭비 %.2fx — 타깃 %.2fx 대비 과하다"
+			% [seen_waste, waste]); fails += 1
 
 	# 렌더 커서를 판정 커서에 묶으면 여기가 20~60% 로 뛴다.
 	if pin_pct > 8.0:

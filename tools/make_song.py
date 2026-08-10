@@ -264,17 +264,14 @@ LIMIT_BLOCK = 64      # 게인 포락선 계산 단위(샘플). 48kHz 에서 1.3
 LIMIT_LOOKAHEAD = 4   # 블록. 피크보다 먼저 게인을 내리기 위한 앞보기(~5ms)
 
 
-def loudness_normalize(buf, target_rms=TARGET_RMS, ceiling=0.89):
-    """체감 크기(RMS)를 맞추고, 그러다 넘치는 피크만 리미터로 눌러 앉힌다.
-
-    피크 정규화만 하면 곡마다 체감 크기가 달라진다. 스템을 여러 개 합치면
-    가끔 우연히 정렬되는 피크 하나가 전체 게인을 결정해버리기 때문이다 —
-    실측(2026-08-07): 6스템 합성곡은 크레스트 18~20dB 에 RMS -19~-21dB 인데
-    단일 트랙 song_140 은 크레스트 14dB 에 RMS -15dB 였다. 그래서 같은 판정음이
-    새 곡에서만 6dB 더 튀어나왔다.
+def _gain_and_limit(buf, target_rms, ceiling):
+    """RMS 를 target 으로 올리고, 그러다 천장을 넘는 피크만 리미터로 눌러 앉힌다.
 
     리미터는 블록 최대값 -> 앞보기 최소 -> 릴리스 평활 -> 샘플별 보간으로 건다.
     앞보기가 있어야 게인이 피크보다 '먼저' 내려가 트랜지언트가 안 깨진다.
+
+    주의: 이 한 패스만으로는 target 에 못 닿는다. 리미터가 누른 만큼 RMS 가
+    다시 내려가기 때문이다 — 그 보상은 loudness_normalize 가 반복으로 한다.
     """
     n = len(buf)
     if n == 0:
@@ -318,6 +315,45 @@ def loudness_normalize(buf, target_rms=TARGET_RMS, ceiling=0.89):
             out[i] = buf[i] * min(cap, ga + (gb - ga) * t)   # 블록 사이 선형 보간
     return out
 
+
+
+def loudness_normalize(buf, target_rms=TARGET_RMS, ceiling=0.89,
+                       passes=4, tol_db=0.25, max_extra_db=6.0):
+    """체감 크기(RMS)를 target 에 맞춘다. 곡의 '들리는 크기' 단일 진실 소스.
+
+    피크 정규화만 하면 곡마다 체감 크기가 달라진다. 스템을 여러 개 합치면
+    가끔 우연히 정렬되는 피크 하나가 전체 게인을 결정해버리기 때문이다 —
+    실측(2026-08-07): 6스템 합성곡은 크레스트 18~20dB 에 RMS -19~-21dB 인데
+    단일 트랙 song_140 은 크레스트 14dB 에 RMS -15dB 였다. 그래서 같은 판정음이
+    새 곡에서만 6dB 더 튀어나왔다.
+
+    한 번만 걸면 부족하다. 게인을 올려 target 에 맞춰도 리미터가 피크를 누르면서
+    RMS 가 다시 내려가기 때문이다 — 실측(2026-08-10, 온셋 보강 뒤 밀도가 오른
+    14곡): 목표 -15.0dB 인데 -16.1 ~ -18.7dB 로 앉아 판정음 여유가 3.7dB 폭으로
+    다시 벌어졌다. 그래서 '재고 -> 모자란 만큼 더 밀고 -> 다시 리미터' 를 반복한다.
+
+    무한정 밀지는 않는다(max_extra_db). 크레스트가 큰 곡을 target 까지 억지로
+    끌어올리면 리미터가 상시 걸려 소리가 납작해진다 — 그런 곡은 조금 조용한 채로
+    두는 쪽이 낫다.
+    """
+    n = len(buf)
+    if n == 0:
+        return buf
+    out = _gain_and_limit(buf, target_rms, ceiling)
+    extra_db = 0.0
+    for _ in range(passes - 1):
+        rms = math.sqrt(sum(v * v for v in out) / n)
+        if rms <= 0.0:
+            break
+        short_db = 20.0 * math.log10(target_rms / rms)
+        if short_db <= tol_db:
+            break
+        step_db = min(short_db, max_extra_db - extra_db)
+        if step_db <= 0.0:
+            break
+        extra_db += step_db
+        out = _gain_and_limit(out, rms * (10.0 ** (step_db / 20.0)), ceiling)
+    return out
 
 def write_wav(path, samples):
     data = b"".join(struct.pack("<h", int(max(-1.0, min(1.0, s)) * 32767)) for s in samples)

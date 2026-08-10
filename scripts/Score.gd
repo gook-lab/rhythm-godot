@@ -25,11 +25,37 @@ var deltas: Array[float] = []
 ## 정확도는 누적값이라 한 번 떨어지면 회복이 사실상 불가능하다.
 ## 초반에 감 잡느라 몇 개 놓치면 그걸로 끝인데, 리듬게임에서 그건 가혹하다.
 ## 체력은 미스에 깎이고 잘 치면 돌아온다 — 나쁜 출발이 사형선고가 아니게 된다.
+## 체력은 '타일 몇 개'가 아니라 '몇 초'로 센다.
+##
+## 미스마다 고정 -7 이면 죽기까지 걸리는 시간이 채보 밀도에 반비례한다.
+## 밀도 보강(초당 2.0 -> 3.5탭) 뒤 실측: 손을 놓으면 7.5초 -> 4.2초 만에 죽는다.
+## 곡을 틀자마자 결과창이 떠서 "노래가 안 나온다"로 읽혔다.
+##
+## 밀도는 곡이 정하는 것이지 난이도 손잡이가 아니다. 촘촘한 구간이 어렵게
+## 느껴져야 하는 이유는 '음을 놓치기 쉬워서'지 '체력이 빨리 닳아서'가 아니다.
+## 그래서 데미지·회복을 그 타일이 차지한 '음악 시간'에 비례시킨다.
+##   같은 8초를 계속 놓치면 밀도와 무관하게 죽는다.
+##
+## 검산: 이전 기준 밀도 2.0탭/초(간격 0.5초)에서
+##   0.5 x 12.5 = 6.25 데미지 -> 16미스 = 8.0초 (이전 7초x15 = 7.5초와 사실상 같다)
+## 3.5탭/초(간격 0.286초)에서
+##   0.286 x 12.5 = 3.6 데미지 -> 28미스 = 8.0초 (이전 4.2초)
 const HEALTH_MAX := 100.0
-const DMG_MISS := 7.0
-const HEAL_PERFECT := 1.6
-const HEAL_EDGE := 1.0      # E/L Perfect
-const HEAL_VERY := 0.4
+const DMG_MISS_PER_SEC := 12.5     # 연속 미스 8초면 사망
+const HEAL_PERFECT_PER_SEC := 3.2
+const HEAL_EDGE_PER_SEC := 2.0
+const HEAL_VERY_PER_SEC := 0.8
+
+## 간격을 그대로 곱하면 한쪽 끝이 터진다 — 2박 걸음 타일(최대 1.8초)은 한 번
+## 놓쳤다고 체력의 1/4 을 가져가면 안 되고, 1/12박 스트림(0.03초)은 백 번
+## 놓쳐도 안 죽으면 안 된다. 양쪽을 이 범위로 자른다.
+const INTERVAL_MIN := 0.15
+const INTERVAL_MAX := 0.70
+
+## 지금 판정할 타일이 차지한 음악 시간(초). Main 이 커서를 옮길 때 넣어 준다.
+## 기본값은 옛 기준 밀도(2탭/초)라, 안 넣어도 예전과 같은 체감이 나온다.
+var interval_sec := 0.5
+
 var health := HEALTH_MAX
 
 ## 플레이어가 아직 한 번도 안 눌렀으면 체력을 깎지 않는다.
@@ -51,6 +77,7 @@ func reset() -> void:
 	max_combo = 0
 	health = HEALTH_MAX
 	started = false
+	interval_sec = 0.5
 
 
 ## 재시작해도 표본은 남긴다. 산포 측정이 세션 단위이기 때문이다.
@@ -64,15 +91,16 @@ func on_judged(v: Judge.Verdict, delta_ms: float, _tile: int) -> void:
 	if is_finite(delta_ms):
 		started = true
 	if started:
+		var dt := clampf(interval_sec, INTERVAL_MIN, INTERVAL_MAX)
 		if Judge.is_miss(v):
-			health = maxf(0.0, health - DMG_MISS)
+			health = maxf(0.0, health - DMG_MISS_PER_SEC * dt)
 		else:
-			var heal := HEAL_VERY
+			var rate := HEAL_VERY_PER_SEC
 			if v == Judge.Verdict.PERFECT:
-				heal = HEAL_PERFECT
+				rate = HEAL_PERFECT_PER_SEC
 			elif v == Judge.Verdict.EARLY_PERFECT or v == Judge.Verdict.LATE_PERFECT:
-				heal = HEAL_EDGE
-			health = minf(HEALTH_MAX, health + heal)
+				rate = HEAL_EDGE_PER_SEC
+			health = minf(HEALTH_MAX, health + rate * dt)
 
 	counts[v] = int(counts.get(v, 0)) + 1
 	total += 1
@@ -84,6 +112,14 @@ func on_judged(v: Judge.Verdict, delta_ms: float, _tile: int) -> void:
 		max_combo = maxi(max_combo, combo)
 	if is_finite(delta_ms):
 		deltas.append(delta_ms)
+
+
+## 체크포인트 부활. 체력만 되돌리고 판정 기록은 남긴다 —
+## 되살아났다고 앞서 낸 미스가 없던 일이 되면 정확도가 거짓말이 된다.
+## started 도 유지한다(이미 친 사람이다).
+func revive() -> void:
+	health = HEALTH_MAX
+	combo = 0
 
 
 func is_dead() -> bool:

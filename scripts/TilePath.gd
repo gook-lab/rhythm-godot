@@ -40,6 +40,20 @@ const EDGE_TARGET := Color(1.65, 1.50, 0.82)       # 2.20 -> 1.65
 const EDGE_GHOST := Color(0.50, 0.62, 0.90, 0.38)
 const GHOST_SCALE := 0.52
 
+## 중간회전 타일 — 행성이 교대하지 않고 이어서 돈다.
+## 표시가 없으면 "왜 갑자기 반대로 도는지" 를 읽을 방법이 없다.
+## twirl(소용돌이)과 구분되어야 하므로 색과 모양을 다르게 쓴다:
+## twirl 은 보라색 나선, 중간회전은 청록색 '이어짐' 겹고리.
+const MID_COLOR := Color(0.45, 1.05, 0.95, 0.9)
+
+## 체크포인트 — 죽으면 여기서 되살아난다. 원작처럼 빛나는 마름모.
+## 지나갈 때 '여기까지는 안전하다'가 읽혀야 하므로 눈에 띄어야 한다.
+const CHECKPOINT_COLOR := Color(1.30, 1.15, 0.45, 0.95)
+
+## 홀드 — 밟고 나서 N바퀴 도는 동안 키를 누르고 있어야 한다.
+## 바퀴 수만큼 동심원을 그린다: 개수가 곧 '얼마나 오래'다.
+const HOLD_COLOR := Color(1.20, 0.62, 1.15, 0.95)
+
 var _positions: PackedVector2Array
 var _angles: PackedFloat32Array
 var _side := 96.0
@@ -49,6 +63,9 @@ var _side := 96.0
 ## 타일과 같은 함수에서 그리면 낙하·회전·페이드를 공짜로 따라간다.
 var _twirl_set := {}
 var _ghost_set := {}
+var _mid_set := {}
+var _cp_set := {}
+var _hold_at := {}     # tile -> 바퀴 수
 var _speed_at := {}     # tile -> [배율, 빨라짐 여부]
 var _cursor := 1        # 지금 밟아야 할 타일
 var _last_cursor := -1
@@ -76,12 +93,23 @@ func setup(positions: PackedVector2Array, angles: PackedFloat32Array, side: floa
 	_last_cursor = -1
 	_twirl_set.clear()
 	_ghost_set.clear()
+	_mid_set.clear()
+	_cp_set.clear()
+	_hold_at.clear()
 	_speed_at.clear()
 	if chart != null:
 		for t in chart.twirl_tiles:
 			_twirl_set[int(t)] = ChartRuntime.spin_at(chart, int(t))
 		for g in chart.ghost_tiles:
 			_ghost_set[int(g)] = true
+		for m in chart.midspin_tiles:
+			_mid_set[int(m)] = true
+		for c in chart.checkpoint_tiles:
+			_cp_set[int(c)] = true
+		for k in range(chart.hold_tiles.size()):
+			var h := chart.hold_tiles[k]
+			if h.y > 0.0:
+				_hold_at[int(h.x)] = h.y
 		# speed_display 가 있으면 그 타일만 마커를 받는다 — 원곡 오디오 채보의
 		# 홉 단위 보정 배율(잡음)은 배속으로는 살아 있되 눈에는 안 보인다.
 		var show := {}
@@ -265,6 +293,30 @@ func _draw_markers(tile: int, center: Vector2, rot_deg: float, alpha: float) -> 
 			var r := (6.0 + 16.0 * f)
 			pts.append(center + Vector2(cos(a), -sin(a)) * r)
 		draw_polyline(pts, Color(0.85, 0.55, 1.0, 0.9 * alpha), 2.5, true)
+	if _hold_at.has(tile):
+		var orbits: float = _hold_at[tile]
+		var col := Color(HOLD_COLOR.r, HOLD_COLOR.g, HOLD_COLOR.b,
+			HOLD_COLOR.a * alpha)
+		for n in range(int(orbits)):
+			draw_arc(center, 13.0 + n * 7.0, 0.0, TAU, 28, col, 2.4, true)
+	if _cp_set.has(tile):
+		# 마름모 = 정사각형을 45도 돌린 것. 타일(사각형)과 겹쳐도 형태가 구분된다.
+		var r := 15.0
+		var rot3 := deg_to_rad(rot_deg)
+		var dm := PackedVector2Array()
+		for n in range(5):
+			dm.append(center + Vector2(0, -r).rotated(rot3 + n * TAU / 4.0))
+		draw_polyline(dm, Color(CHECKPOINT_COLOR.r, CHECKPOINT_COLOR.g,
+			CHECKPOINT_COLOR.b, CHECKPOINT_COLOR.a * alpha), 2.6, true)
+	if _mid_set.has(tile):
+		# 겹친 두 고리 = '두 행성이 교대하지 않고 이어진다'.
+		# 진행 방향으로 나란히 놓아 어느 쪽으로 이어지는지도 같이 읽힌다.
+		var rot2 := deg_to_rad(rot_deg)
+		var dir := Vector2(cos(rot2), -sin(rot2))
+		for sgn in [-1.0, 1.0]:
+			draw_arc(center + dir * (sgn * 7.0), 11.0, 0.0, TAU, 20,
+				Color(MID_COLOR.r, MID_COLOR.g, MID_COLOR.b, MID_COLOR.a * alpha),
+				2.2, true)
 	if _speed_at.has(tile):
 		var e: Array = _speed_at[tile]
 		var mult: float = e[0]

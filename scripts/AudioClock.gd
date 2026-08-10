@@ -87,6 +87,28 @@ func stop() -> void:
 	_player.stop()
 
 
+## 곡 안의 다른 지점으로 건너뛴다. 체크포인트 부활이 유일한 사용처다.
+##
+## 이 경로를 오래 막아 뒀던 이유가 있다: now_ms() 의 단조 클램프
+## (`_last_ms = maxf(ms, _last_ms)`)는 시간이 되감기지 않는다는 전제 위에 있고,
+## 그냥 _player.seek() 만 부르면 클럭이 옛 값에 영원히 얼어붙는다 —
+## 크래시가 아니라 '판정이 전부 미스가 되는' 조용한 고장이다.
+##
+## 그런데 클램프는 '한 재생 구간 안에서'만 성립하는 불변식이지 곡 전체의
+## 불변식이 아니다. start() 가 이미 매 재생마다 이력을 버리고 있다.
+## 건너뛰기도 같은 리셋을 하면 새 구간이 시작되는 것과 구별할 이유가 없다.
+## 그래서 '방어 코드'가 아니라 start() 와 같은 진입점 규약으로 만든다 —
+## _player.seek() 를 직접 부르는 경로는 여전히 만들지 않는다.
+func seek(ms: float) -> void:
+	if not _player.playing:
+		return
+	_last_ms = -INF                        # 단조 클램프 이력을 버린다
+	clamp_hits = 0
+	max_backstep_ms = 0.0
+	_started_usec = Time.get_ticks_usec()  # 워밍업 다시 — 건너뛴 직후 클럭은 못 믿는다
+	_player.seek(maxf(ms, 0.0) / 1000.0)
+
+
 ## 일시정지. stream_paused 는 get_playback_position() 을 얼린다 —
 ## 언 클럭 = 시간이 안 흐름 = 감시자가 미스를 안 낸다.
 ## 별도의 '일시정지 시각 저장/복원'이 필요 없는 이유다.

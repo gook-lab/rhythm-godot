@@ -27,6 +27,14 @@ var _radius := 96.0
 ## true 면 A 가 축이고 B 가 돈다. 타일마다 뒤집힌다.
 var _a_is_pivot := true
 
+## 세 번째 행성(삼행성 모드). 없으면 null 이고 2행성으로 동작한다.
+##
+## 어디에 두나: 직전 타일(pos[i-2])이다. 연속한 두 타일은 정의상 정확히
+## spacing 만큼 떨어져 있으므로, 축에서 본 거리가 도는 행성과 같다 —
+## 셋이 같은 반지름 위에 있어야 '행성 무리'로 읽힌다.
+var _third_pos := Vector2.INF
+var _c: Node2D = null
+
 var _trail_a: Array[Vector2] = []
 var _trail_b: Array[Vector2] = []
 var _color_a := Color(1.0, 0.45, 0.35)
@@ -41,11 +49,24 @@ func _ready() -> void:
 		_color_b = (_b as Planet).color
 
 
-func configure(pivot_pos: Vector2, start_deg: float, sweep_deg: float, radius: float) -> void:
+func configure(pivot_pos: Vector2, start_deg: float, sweep_deg: float, radius: float,
+		third_pos := Vector2.INF) -> void:
 	_pivot_pos = pivot_pos
 	_start_deg = start_deg
 	_sweep_deg = sweep_deg
 	_radius = radius
+	_third_pos = third_pos
+	if _third_pos != Vector2.INF and _c == null:
+		# 3행성 채보에서만 노드를 만든다 — 2행성 채보에는 존재 자체가 없다.
+		var p := Planet.new()
+		p.name = "PlanetC"
+		p.color = Color(0.75, 1.0, 0.55)
+		add_child(p)
+		_c = p
+	if _c != null:
+		_c.visible = _third_pos != Vector2.INF
+		if _third_pos != Vector2.INF:
+			_c.position = _third_pos
 
 
 func swap_roles() -> void:

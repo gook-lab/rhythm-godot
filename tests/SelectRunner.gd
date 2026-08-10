@@ -58,5 +58,15 @@ func _ready() -> void:
 	ok(GameState.selected_chart == entries[entries.size() - 1].path,
 		"Enter -> GameState 에 선택 저장 (%s)" % GameState.selected_chart)
 
+	# 입력 효과음 토글(M). 실제 음악에서는 타일이 멜로디 온셋 위라 효과음이
+	# 겹쳐 들리는데, 채움 타일에는 멜로디가 없어서 끄면 무음이 된다 —
+	# 그래서 끄고 켤 수 있어야 하고, 그 상태가 화면에 보여야 한다.
+	var was: bool = Records.sfx_enabled
+	sel._input(key(KEY_M))
+	ok(Records.sfx_enabled != was, "M -> 입력음 토글")
+	ok(sel.get("_info").text.contains("입력음"), "선택 화면에 입력음 상태 표시")
+	sel._input(key(KEY_M))
+	ok(Records.sfx_enabled == was, "M 두 번 -> 원래대로")
+
 	print("PASS" if _fails == 0 else "FAILED %d" % _fails)
 	get_tree().quit(_fails)

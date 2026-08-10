@@ -32,6 +32,12 @@ def norm(x):
     return x % 360.0
 
 
+def planet_offset(count):
+    """ChartRuntime.planet_offset_deg 와 같아야 한다. (P-2)*180/P"""
+    p = max(int(count), 2)
+    return (p - 2) * 180.0 / p
+
+
 def beats_for_tile(prev, cur):
     # U턴(sweep 0 = 360)은 wrap 경계 위라 float 오차에 0박/2박이 뒤집힌다.
     # 여유는 beats_for_tile_spin 과 같아야 한다 (거기 주석 참조).
@@ -47,7 +53,7 @@ def signed_turn(b, spin):
     return t - 360.0 if t > 180.0 else t
 
 
-def angles_from_hops(hops, start_deg=0.0, loop_guard_deg=None):
+def angles_from_hops(hops, start_deg=0.0, loop_guard_deg=None, offset=0.0):
     """hops[k] = 타일 k+2 에 도달하는 박자.
 
     타일 1 로 가는 첫 홉은 항상 1박이라 입력에서 뺐다.
@@ -69,7 +75,7 @@ def angles_from_hops(hops, start_deg=0.0, loop_guard_deg=None):
                 twirls.append(k + 1)   # 이 홉의 축 타일
                 net = 0.0
         net += signed_turn(b, spin)
-        ang.append(norm(ang[-1] + 180.0 + spin * b * 180.0))
+        ang.append(norm(ang[-1] + 180.0 + offset + spin * b * 180.0))
     ang.append(ang[-1])  # 최종 타일의 나갈 방향: 직선으로 채운다
     return ang, twirls
 
@@ -101,6 +107,12 @@ PEN_CROWD = 0.28      # 근접 (< 1.75변) — 퍼지게 만드는 압력
 PEN_UTURN_BACK = 3.2  # U턴이 직전 타일을 되밟는 것 — 원작 어휘라 할인
 COST_TWIRL = 1.4      # twirl 남발 방지 (겹침 하나보다 싸야 한다)
 COST_GHOST = 2.2      # 고스트 남발 방지 (U턴 어휘가 완전히 사라지지 않게)
+COST_MID = 1.2        # 중간회전 남발 방지 (twirl 과 같은 급의 '표현 하나')
+
+## 체크포인트 간격(초). 곡이 150~180초라 이 값이면 5~6개가 놓인다.
+## 너무 촘촘하면 죽어도 아무 손해가 없어 긴장이 사라지고, 너무 성기면
+## 애초에 체크포인트를 넣은 이유(2분 되돌리기)가 안 풀린다.
+CHECKPOINT_SEC = 30.0
 BEAM_WIDTH = 64
 _CELL = 1.75  # 공간 해시 셀 크기(변 배수). 3x3 조회가 PEN_CROWD 반경을 덮는다.
 
@@ -181,38 +193,59 @@ def _programs_for_step(b, cnt, s0):
     if cnt == 1:
         progs = []
         for subs, gflags in _decomps(b):
-            combos = [()]
+            combos = [((), ())]
             for sb in subs:
                 # 기하가 같은 분기(직선·U턴)는 안 뒤집는다 — 순수 비용이다.
                 flip = abs(signed_turn(sb, 1) - signed_turn(sb, -1)) > 1e-9
-                combos = [seq + (s,) for seq in combos
-                          for s in ((1, -1) if flip else (seq[-1] if seq else s0,))]
-            progs.extend([(subs, gflags, seq)] for seq in combos)
+                nc = []
+                for (seq, mseq) in combos:
+                    spins = (1, -1) if flip else (seq[-1] if seq else s0,)
+                    for sp in spins:
+                        for md in (False, True):
+                            nc.append((seq + (sp,), mseq + (md,)))
+                combos = nc
+            progs.extend([(subs, gflags, seq, mseq)] for seq, mseq in combos)
         return progs
 
+    # 아래는 '스핀 무늬'만 만든다. 중간회전 무늬는 _with_midspin 이 곱해 준다 —
+    # 중간회전은 진행 방향을 180도 접는 것이라, 같은 스핀 무늬라도 완전히 다른
+    # 모양이 된다(0.25박 스트림: 코일 vs 완만한 호).
     if abs(b - 1.0) < 1e-9:      # 1박은 직선뿐 — 스핀이 모양을 못 바꾼다
-        return [[((b,), (False,), (s0,))] * cnt]
-
-    if abs(b - 2.0) < 1e-9:      # 채움 체인: 직선 행진 · 계단 · 사다리 · U턴 왕복
+        base = [[((b,), (False,), (s0,))] * cnt]
+    elif abs(b - 2.0) < 1e-9:    # 채움 체인: 직선 행진 · 계단 · 사다리 · U턴 왕복
         straight = [((1.0, 1.0), (True, False), (s0, s0))] * cnt
         stairs = [[((0.5, 1.5), (True, False), (s, s))] * cnt for s in (s0, -s0)]
         ladder = [((0.5, 1.5), (True, False),
                    ((s0, s0) if k % 2 == 0 else (-s0, -s0)))
                   for k in range(cnt)]
         uturns = [((b,), (False,), (s0,))] * cnt
-        return [straight] + stairs + [ladder, uturns]
+        base = [straight] + stairs + [ladder, uturns]
+    else:
+        def spin_seq(period, start):
+            return [[((b,), (False,), (start if (k // period) % 2 == 0 else -start,))]
+                    for k in range(cnt)]
 
-    def spin_seq(period, start):
-        return [[((b,), (False,), (start if (k // period) % 2 == 0 else -start,))]
-                for k in range(cnt)]
+        base = []
+        for start in (s0, -s0):
+            base.append(sum(spin_seq(1, start), []))   # 지그재그 — 스트림의 본선
+            base.append(sum(spin_seq(2, start), []))   # 2주기 파도
+            base.append([((b,), (False,), (start,))] * cnt)  # 상수 스핀 — 나선 호
+        base.append(sum(spin_seq(3, s0), []))          # 3주기 — 넓은 파도
+    return _with_midspin(base)
 
-    progs = []
-    for start in (s0, -s0):
-        progs.append(sum(spin_seq(1, start), []))   # 지그재그 — 스트림의 본선
-        progs.append(sum(spin_seq(2, start), []))   # 2주기 파도
-        progs.append([((b,), (False,), (start,))] * cnt)   # 상수 스핀 — 나선 호
-    progs.append(sum(spin_seq(3, s0), []))          # 3주기 — 넓은 파도
-    return progs
+
+## 스핀 무늬 하나당 중간회전 무늬 셋: 없음 · 전부 · 번갈아.
+## 전수 조합(2^n)은 빔이 감당 못 하고, 무늬로서도 의미가 없다 —
+## 사람이 읽는 건 '규칙적인 반복'이지 임의 배열이 아니다.
+def _with_midspin(programs):
+    out = []
+    for prog in programs:
+        for mode in range(3):
+            out.append([(subs, gf, seq,
+                         tuple((mode == 1) or (mode == 2 and (k + si) % 2 == 0)
+                               for si in range(len(subs))))
+                        for k, (subs, gf, seq) in enumerate(prog)])
+    return out
 
 
 def _apply_program(state, program, side):
@@ -220,14 +253,17 @@ def _apply_program(state, program, side):
     (sc, ang, x, y, spin, ch, grid, prev) = state
     pen = 0.0
     a, xx, yy, g, pv, sp = ang, x, y, grid, prev, spin
-    for (subs, gflags, seq) in program:
+    for (subs, gflags, seq, mseq) in program:
         for si, sb in enumerate(subs):
             if seq[si] != sp:
                 pen += COST_TWIRL
                 sp = seq[si]
             if gflags[si]:
                 pen += COST_GHOST
-            a = norm(a + 180.0 + sp * sb * 180.0)
+            if mseq[si]:
+                pen += COST_MID
+            # 중간회전이면 두 행성이 교대하지 않아 기준각의 +180 이 빠진다.
+            a = norm(a + (0.0 if mseq[si] else 180.0) + sp * sb * 180.0)
             nx = xx + math.cos(math.radians(a)) * side
             ny = yy - math.sin(math.radians(a)) * side
             back = pv if abs(sb - 2.0) < 1e-9 else None
@@ -273,32 +309,37 @@ def plan_path(hops, start_deg=0.0, side=RADIUS, beam=BEAM_WIDTH):
 
     # 선택 이력 -> 최종 배열들
     choices = states[0][5]
-    hops_out, twirls, ghosts = [], [], []
+    hops_out, twirls, ghosts, mids = [], [], [], []
     ang = [norm(start_deg)]
     spin, tile = 1, 0
     old_to_new = {0: 0, 1: 1}   # 타일 0(출발)과 1(첫 온셋)은 항상 그대로다
     old_tile = 1
-    for (subs, gflags, seq) in choices:
+    for (subs, gflags, seq, mseq) in choices:
         for si, sb in enumerate(subs):
             if seq[si] != spin:
                 twirls.append(tile + 1)   # 이 홉의 축 타일
                 spin = seq[si]
-            ang.append(norm(ang[-1] + 180.0 + spin * sb * 180.0))
+            a0 = ang[-1] + (0.0 if mseq[si] else 180.0)
+            ang.append(norm(a0 + spin * sb * 180.0))
             hops_out.append(sb)
             tile += 1
+            # 고스트도 중간회전도 '이 서브홉이 도달하는 타일'에 붙는다.
             if gflags[si]:
-                ghosts.append(tile + 1)   # 이 서브홉이 도달하는 타일이 고스트
+                ghosts.append(tile + 1)
+            if mseq[si]:
+                mids.append(tile + 1)
         old_tile += 1
         old_to_new[old_tile] = tile + 1   # 원본 홉이 끝나는 타일 = 실제(밟는) 타일
     ang.append(ang[-1])
-    return hops_out, twirls, ghosts, ang, old_to_new
+    return hops_out, twirls, ghosts, mids, ang, old_to_new
 
 
 TURN_EPS_DEG = 1.0  # ChartRuntime.TURN_EPS_DEG 와 같아야 한다
 
 
-def beats_for_tile_spin(prev, cur, spin):
-    d = (cur - (prev + 180.0)) if spin >= 0 else ((prev + 180.0) - cur)
+def beats_for_tile_spin(prev, cur, spin, mid=False, offset=0.0):
+    base = (prev if mid else prev + 180.0) + offset
+    d = (cur - base) if spin >= 0 else (base - cur)
     s = norm(d)
     # U턴은 sweep 0 = 360 이고 그 값이 정확히 wrap 경계에 얹혀 있다.
     # 여유 없이 한쪽만 보면 float 오차 0.001도에 0박/2박이 뒤집힌다
@@ -308,12 +349,14 @@ def beats_for_tile_spin(prev, cur, spin):
     return s / 180.0
 
 
-def hops_of(ang, twirls=()):
+def hops_of(ang, twirls=(), mids=(), offset=0.0):
     """ChartRuntime.beats_to_reach 와 같은 계산. 반환 길이 = len(ang)-1."""
+    mset = set(mids)
     out = []
     for i in range(1, len(ang)):
         inc = ang[i - 2] if i >= 2 else ang[0]
-        out.append(beats_for_tile_spin(inc, ang[i - 1], spin_at(twirls, i - 1)))
+        out.append(beats_for_tile_spin(inc, ang[i - 1], spin_at(twirls, i - 1),
+                                       i in mset, offset))
     return out
 
 
@@ -326,26 +369,32 @@ def tile_positions(ang, r=RADIUS):
     return p
 
 
-def verify(ang, hops_wanted, twirls=()):
+def verify(ang, hops_wanted, twirls=(), mids=(), offset=0.0):
     """런타임과 같은 계산으로 (1) 의도한 리듬이 나오는지 (2) 착지가 맞는지 확인.
 
     (2)가 이 파일에 있는 이유: 공전 끝점이 다음 타일 좌표와 어긋나는 버그가 있었다.
     직선 구간에선 오차 0 이라 안 보이고, 90도 턴에서 135px, U턴에서 192px 벗어났다.
     생성 단계에서 같이 잰다.
     """
-    hops = hops_of(ang, twirls)
-    want = [1.0] + list(hops_wanted)
+    hops = hops_of(ang, twirls, mids, offset)
+    # 암묵적 첫 홉(타일 1)은 '직선'이다 — angles[0] 이 진입이자 진출이라
+    # 스윕이 180-offset 도가 된다. 2행성이면 1박이지만 3행성이면 2/3박이다.
+    # 여기에 1.0 을 못 박아 두면 삼행성 채보가 첫 타일부터 검증에 걸린다.
+    want = [(180.0 - offset) / 180.0] + list(hops_wanted)
     assert len(hops) == len(want), f"홉 개수 {len(hops)} != {len(want)}"
     for i, (g, w) in enumerate(zip(hops, want)):
         assert abs(g - w) < 1e-6, f"타일 {i+1} 홉: want {w}, got {g}"
 
+    mset = set(mids)
     pos = tile_positions(ang)
     worst = 0.0
     for i in range(1, len(ang)):
         inc = ang[i - 2] if i >= 2 else ang[0]
         sp = spin_at(twirls, i - 1)
-        sw = beats_for_tile_spin(inc, ang[i - 1], sp) * 180.0 * (1 if sp >= 0 else -1)
-        end = math.radians(norm(inc + 180.0) + sw)
+        md = i in mset
+        sw = beats_for_tile_spin(inc, ang[i - 1], sp, md, offset) * 180.0 \
+            * (1 if sp >= 0 else -1)
+        end = math.radians(norm(inc + (0.0 if md else 180.0) + offset) + sw)
         lx = pos[i - 1][0] + math.cos(end) * RADIUS
         ly = pos[i - 1][1] - math.sin(end) * RADIUS
         worst = max(worst, math.hypot(lx - pos[i][0], ly - pos[i][1]))
@@ -368,19 +417,23 @@ LEAD_IN_BEATS = 4.0
 
 
 def write_tres(name, title, bpm, hops_wanted, start_offset_ms=None, speed_changes=None,
-               loop_guard_deg=None):
+               loop_guard_deg=None, holds=None, checkpoints=None, planets=2):
     """손으로 쓴 홉 리스트 -> .tres. 테스트/데모 채보 전용 (계획 없음)."""
     if start_offset_ms is None:
         start_offset_ms = LEAD_IN_BEATS * 60000.0 / bpm
-    ang, twirls = angles_from_hops(hops_wanted, loop_guard_deg=loop_guard_deg)
-    hops, worst = verify(ang, hops_wanted, twirls)
-    _emit_tres(name, title, bpm, ang, hops, twirls, [],
-               start_offset_ms, speed_changes, worst)
+    off = planet_offset(planets)
+    ang, twirls = angles_from_hops(hops_wanted, loop_guard_deg=loop_guard_deg,
+                                   offset=off)
+    hops, worst = verify(ang, hops_wanted, twirls, offset=off)
+    _emit_tres(name, title, bpm, ang, hops, twirls, [], [], checkpoints or [],
+               start_offset_ms, speed_changes, worst, holds=holds or [],
+               planets=planets)
     return ang
 
 
-def _emit_tres(name, title, bpm, ang, hops, twirls, ghosts,
-               start_offset_ms, speed_changes, worst, display_tiles=None):
+def _emit_tres(name, title, bpm, ang, hops, twirls, ghosts, mids, checkpoints,
+               start_offset_ms, speed_changes, worst, display_tiles=None,
+               holds=(), planets=2):
     total = sum(hops)
     path = os.path.join(HERE, "charts", name + ".tres")
     with open(path, "w", encoding="utf-8") as f:
@@ -390,6 +443,8 @@ def _emit_tres(name, title, bpm, ang, hops, twirls, ghosts,
         f.write("[resource]\n")
         f.write('script = ExtResource("1_chart")\n')
         f.write("bpm = %s\n" % fmt(float(bpm)))
+        if int(planets) != 2:
+            f.write("planet_count = %d\n" % int(planets))
         f.write("angles = PackedFloat32Array(%s)\n" % ", ".join(fmt(a) for a in ang))
         f.write("start_offset_ms = %s\n" % fmt(float(start_offset_ms)))
         f.write('audio = ExtResource("2_audio")\n')
@@ -399,6 +454,15 @@ def _emit_tres(name, title, bpm, ang, hops, twirls, ghosts,
         if ghosts:
             f.write("ghost_tiles = PackedInt32Array(%s)\n"
                     % ", ".join(str(t) for t in ghosts))
+        if mids:
+            f.write("midspin_tiles = PackedInt32Array(%s)\n"
+                    % ", ".join(str(t) for t in mids))
+        if checkpoints:
+            f.write("checkpoint_tiles = PackedInt32Array(%s)\n"
+                    % ", ".join(str(t) for t in checkpoints))
+        if holds:
+            f.write("hold_tiles = PackedVector2Array(%s)\n"
+                    % ", ".join("%d, %s" % (int(t), fmt(float(n))) for t, n in holds))
         if speed_changes:
             # 배율도 fmt 를 거쳐야 한다. 여기만 %g 로 남겨두면 6유효숫자로 잘려
             # (1.04033 vs 1.0403271377884193) 그 구간의 모든 타일에 상대오차
@@ -469,8 +533,8 @@ def chart_from_song(meta_path, name, title, audio_res, speed_marks=None):
     # 배정밀도 값을 쓰면 hops_of 가 각도(15k도)에서 되계산하는 값과 비트까지 같다.
     gaps = [round((onsets[i] - onsets[i - 1]) * 12.0) / 12.0
             for i in range(1, len(onsets))]
-    hops, twirls, ghosts, ang, old_to_new = plan_path(gaps)
-    _, worst = verify(ang, hops, twirls)
+    hops, twirls, ghosts, mids, ang, old_to_new = plan_path(gaps)
+    _, worst = verify(ang, hops, twirls, mids)
 
     # 리듬 보존: 밟는(비고스트) 타일의 누적박 == 원본 온셋 간격의 누적.
     # 분해가 박자 합을 보존한다는 걸 '결과물'에서 다시 확인한다.
@@ -517,6 +581,26 @@ def chart_from_song(meta_path, name, title, audio_res, speed_marks=None):
         if not display_tiles:
             display_tiles = [-1]
 
+    # ── 체크포인트 배치 ────────────────────────────────────────
+    # 실제 히트타임을 되계산해서 일정 시간마다 찍는다. 박으로 세면 안 된다 —
+    # 토끼/달팽이가 걸린 구간은 같은 박수라도 벽시계가 배로 차이난다.
+    # 고스트는 밟지 않으므로 후보에서 뺀다(거기서 되살아나면 첫 입력이 없다).
+    ghost_set = set(ghosts)
+    spb_ms = 60000.0 / bpm
+    # plan_path 의 hops 는 '타일 1 로 가는 첫 홉(항상 1박)'이 빠져 있다.
+    # verify() 가 want = [1.0] + hops 로 비교하는 것과 같은 규약이다.
+    full_hops = [1.0] + list(hops)
+    checkpoints = []
+    t_ms, next_cp = 0.0, CHECKPOINT_SEC * 1000.0
+    mult = dict(speed_changes)
+    cur_mult = 1.0
+    for i in range(1, len(ang)):
+        cur_mult = mult.get(i - 1, cur_mult)
+        t_ms += full_hops[i - 1] * spb_ms / cur_mult
+        if t_ms >= next_cp and i not in ghost_set and i < len(ang) - 1:
+            checkpoints.append(i)
+            next_cp = t_ms + CHECKPOINT_SEC * 1000.0
+
     # 벽시계 시작점: 메타가 주면 그대로(가변 템포 경로), 없으면 상수 템포 공식.
     so_ms = meta.get("start_offset_ms")
     if so_ms is None:
@@ -527,7 +611,7 @@ def chart_from_song(meta_path, name, title, audio_res, speed_marks=None):
     prev_audio = AUDIO
     AUDIO = audio_res
     try:
-        _emit_tres(name, title, bpm, ang, hops, twirls, ghosts,
+        _emit_tres(name, title, bpm, ang, hops, twirls, ghosts, mids, checkpoints,
                    so_ms, speed_changes, worst, display_tiles)
     finally:
         AUDIO = prev_audio
@@ -552,6 +636,13 @@ if __name__ == "__main__":
     # 사각형: 90도 턴 4연속. 경로가 자기 위로 되돌아온다.
     # 착지 버그가 가장 잘 드러났던 모양이라 회귀용으로 남긴다.
     write_tres("t05_square", "05 사각형(90도 4연속)", 120, [1, 0.5, 0.5, 0.5, 0.5, 1])
+    # 홀드: 타일 2 에서 한 바퀴, 타일 5 에서 두 바퀴 더 돈다.
+    # 밟고 -> 누른 채로 도는 걸 보고 -> 마지막 바퀴가 끝나는 순간 뗀다.
+    write_tres("t06_hold", "06 홀드", 120, [1, 1, 1, 1, 1, 1],
+               holds=[(2, 1), (5, 2)], checkpoints=[4])
+    # 삼행성: 같은 리듬(전부 1박)인데 기하가 다르다. 도는 행성이 60도 더
+    # 돌아간 데서 출발하므로 직선 타일이 스윕 120도(=2/3박)가 된다.
+    write_tres("t07_three", "07 삼행성", 120, [1, 1, 1, 1, 1, 1, 1], planets=3)
 
     # 손으로 짠 데모. 4/4 로 읽히도록 마디마다 4박이 되게 맞췄다.
     demo = (

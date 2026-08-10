@@ -43,6 +43,10 @@ const SHAKE_MIN_COMBO := 3
 ## 시작 카운트다운을 보여줄 박자 수. 인트로가 16박이라 전부 세면 지루하다.
 const COUNTDOWN_BEATS := 4
 
+## 체크포인트 부활 시 그 타일보다 얼마나 앞에서 다시 시작하나(ms).
+## 정확히 그 타일에 떨어뜨리면 되살아나는 순간이 곧 판정 순간이라 못 친다.
+const REVIVE_LEAD_MS := 1600.0
+
 @export var chart: Chart
 
 @onready var _path: TilePath = $World/Path
@@ -103,6 +107,17 @@ var _song_len_ms := 0.0
 var _shake := 0.0
 var _shake_t := 0.0
 
+## 이번 판에 체크포인트를 몇 번 썼나. 결과 화면에 밝힌다 —
+## 안 밝히면 무한 부활로 낸 S 랭크와 한 번에 낸 S 랭크가 구별되지 않는다.
+var _checkpoints_used := 0
+
+## 진행 중인 홀드. -1 이면 없음.
+## _hold_key 를 같이 들고 있어야 하는 이유: 판정키가 거의 모든 키라서
+## (양손 교타) '아무 키나 떼면 홀드 종료'로 하면 다른 손의 탭이 홀드를 끊는다.
+var _hold_tile := -1
+var _hold_key := 0
+var _hold_end_ms := 0.0
+
 ## 마지막 프레임의 공전 진행률. 회귀 테스트가 읽는다 —
 ## 이 값이 1.0 에 오래 붙어 있으면 행성이 얼어 있다는 뜻이다.
 var _last_u := 0.0
@@ -132,7 +147,12 @@ func _ready() -> void:
 	_positions = ChartRuntime.tile_positions(chart.angles, TILE_SPACING)
 	for g in chart.ghost_tiles:
 		_ghosts[int(g)] = true
-	_judged_total = _hit_times.size() - 1 - _ghosts.size()
+	# 홀드는 밟기와 떼기 두 번 판정된다 — 분모도 두 번 세야 100% 가 나온다.
+	var hold_n := 0
+	for k in range(chart.hold_tiles.size()):
+		if chart.hold_tiles[k].y > 0.0:
+			hold_n += 1
+	_judged_total = _hit_times.size() - 1 - _ghosts.size() + hold_n
 	_song_len_ms = chart.audio.get_length() * 1000.0
 	_draw_path()
 
@@ -166,6 +186,8 @@ func _restart() -> void:
 	_shake = 0.0
 	_shake_t = 0.0
 	_prev_combo = 0
+	_checkpoints_used = 0
+	_hold_tile = -1
 	_popup.text = ""
 	_score.reset()   # 표본(deltas)은 남긴다 — 산포 측정이 세션 단위다
 	_planets.clear_trails()
@@ -197,12 +219,24 @@ func _configure_orbit(i: int) -> void:
 	if i <= 0 or i >= chart.angles.size():
 		return
 	# 회전 방향(twirl)은 축 타일(i-1)의 상태를 따른다. 스윕 부호가 곧 방향이다.
+	# 중간회전은 그 타일 자신의 성질이라 i 로 조회한다 — 시작각이 180도 달라진다.
 	var spin := ChartRuntime.spin_at(chart, i - 1)
+	var mid := ChartRuntime.is_midspin(chart, i)
+	var off := ChartRuntime.chart_offset_deg(chart)
+	# 축 타일에 홀드가 걸려 있으면 떠나기 전에 그만큼 더 돈다.
+	# 360도의 배수라 끝나는 각도가 같다 — 착지 불변식이 안 깨진다.
+	var extra := 360.0 * ChartRuntime.hold_orbits_at(chart, i - 1) \
+		* (1.0 if spin >= 0 else -1.0)
+	# 삼행성이면 세 번째는 직전 타일에 선다. 연속 타일은 정의상 spacing 만큼
+	# 떨어져 있어서 축에서 본 거리가 도는 행성과 같다.
+	var third := Vector2.INF
+	if chart.planet_count >= 3 and i >= 2:
+		third = _positions[i - 2]
 	_planets.configure(
 		_positions[i - 1],
-		ChartRuntime.orbit_start_deg(chart.angles, i),
-		ChartRuntime.orbit_sweep_deg(chart.angles, i, spin),
-		TILE_SPACING)
+		ChartRuntime.orbit_start_deg(chart.angles, i, mid, off),
+		ChartRuntime.orbit_sweep_deg(chart.angles, i, spin, mid, off) + extra,
+		TILE_SPACING, third)
 
 
 ## 판정: 타일 i 의 판정창을 이웃까지의 거리로 캡한다. (판정 커서 _idx 를 따른다)
@@ -210,8 +244,14 @@ func _configure_orbit(i: int) -> void:
 func _apply_windows(i: int) -> void:
 	if i >= _hit_times.size():
 		return
-	_judge.set_gaps(_gap_before(i), _gap_after(i))
+	var before := _gap_before(i)
+	_judge.set_gaps(before, _gap_after(i))
 	_timing_bar.set_windows(_judge.perfect_ms, _judge.very_ms, _judge.miss_ms)
+	# 체력은 '타일 몇 개'가 아니라 '몇 초'로 센다(Score 주석 참조).
+	# 이 타일이 차지한 음악 시간을 넘겨야 밀도가 사망 속도를 바꾸지 않는다.
+	# 첫 타일은 앞이 카운트인이라 간격이 INF/과대다 — 기본값을 그대로 둔다.
+	if is_finite(before):
+		_score.interval_sec = before / 1000.0
 
 
 ## 판정창 캡은 '판정되는 이웃'까지의 거리여야 한다. 고스트는 밟지 않으므로
@@ -258,6 +298,13 @@ func _process(delta: float) -> void:
 		_judge.emit_miss(_idx)
 		_advance()
 
+	# ── 홀드: 떼야 할 시각을 넘기면 뗌을 미스로 확정한다.
+	# 탭과 대칭이다 — 안 누른 것도, 안 뗀 것도 이벤트가 없으니 감시자가 낸다.
+	if _hold_tile >= 0 and t > _hold_end_ms + _judge.miss_ms:
+		var ht := _hold_tile
+		_hold_tile = -1
+		_judge.emit_miss(ht)
+
 	# ── 렌더 커서: 시간이 지나면 그냥 전진한다. 미스 기한을 기다리지 않는다.
 	# 이게 판정 커서와 붙어 있으면 행성이 매 타일 miss_ms 만큼 얼어붙는다.
 	while _vis < _hit_times.size() and t >= _hit_times[_vis]:
@@ -266,7 +313,8 @@ func _process(delta: float) -> void:
 		_configure_orbit(_vis)
 
 	if _score.is_dead():
-		_on_song_finished(true)
+		if not _revive_at_checkpoint():
+			_on_song_finished(true)
 		return
 
 	if _idx >= _hit_times.size():
@@ -336,7 +384,13 @@ func _input(event: InputEvent) -> void:
 	var k := event as InputEventKey
 	# echo 는 OS 키 리피트다. 안 막으면 가만히 눌러만 있어도 idx 가 폭주한다.
 	# 크래시가 아니라 조용히 틀리는 종류라 가장 찾기 어렵다.
-	if not k.pressed or k.echo:
+	if k.echo:
+		return
+	# '뗌'은 홀드에서만 의미가 있다. pressed 필터보다 먼저 봐야 한다 —
+	# 아래로 내려가면 not k.pressed 에서 통째로 버려진다.
+	if not k.pressed:
+		if _hold_tile >= 0 and k.keycode == _hold_key:
+			_release_hold(AudioClock.judged_ms() - _hold_end_ms)
 		return
 	if k.keycode == KEY_ESCAPE:
 		if _finished:
@@ -378,8 +432,67 @@ func _input(event: InputEvent) -> void:
 	if delta < -_judge.miss_ms:
 		return
 
-	_judge.judge_input(delta, _idx)
+	var tapped := _idx
+	_judge.judge_input(delta, tapped)
 	_advance()
+	# 홀드 타일이면 여기서 '누르고 있기'가 시작된다.
+	# 미스로 밟은 경우에도 시작한다 — 안 그러면 한 번 놓친 뒤 남은 홀드가
+	# 통째로 사라져서 화면(행성은 계속 돈다)과 판정이 어긋난다.
+	var orbits := ChartRuntime.hold_orbits_at(chart, tapped)
+	if orbits > 0.0:
+		_hold_tile = tapped
+		_hold_key = k.keycode
+		_hold_end_ms = _hit_times[tapped] + ChartRuntime.hold_beats_at(chart, tapped) \
+			* (60000.0 / chart.bpm) / ChartRuntime.speed_mult_at(chart, tapped)
+
+
+## 체력이 바닥났을 때 마지막으로 지난 체크포인트에서 되살린다.
+## 되살릴 곳이 없으면 false — 호출자가 실패 화면을 띄운다.
+##
+## 곡을 되감는 유일한 경로다. AudioClock.seek() 가 단조 클램프 이력을 버리므로
+## 클럭이 얼어붙지 않는다(그 주석 참조).
+func _revive_at_checkpoint() -> bool:
+	var cp := -1
+	for k in range(chart.checkpoint_tiles.size()):
+		var t := int(chart.checkpoint_tiles[k])
+		if t <= _idx and t > cp and t < _hit_times.size():
+			cp = t
+	if cp < 1:
+		return false
+
+	_checkpoints_used += 1
+	_hold_tile = -1
+	# 체크포인트 '조금 앞'으로 간다. 정확히 그 타일에 떨어뜨리면 되살아나는
+	# 순간이 곧 판정 순간이라 손을 올릴 시간이 없다. 카운트인과 같은 이유다.
+	var lead := minf(REVIVE_LEAD_MS, _hit_times[cp] - _hit_times[0])
+	_idx = _next_judged(cp)
+	_vis = cp
+	_score.revive()
+	_planets.clear_trails()
+	_path.clear_impacts()
+	_popup.text = ""
+	_verdict_label.text = ""
+	_combo_label.text = ""
+	_configure_orbit(_vis)
+	_apply_windows(_idx)
+	_camera.position = _camera_target(_vis, 0.0)
+	_camera.offset = Vector2.ZERO
+	_camera.reset_smoothing()
+	_shake = 0.0
+	AudioClock.seek(_hit_times[cp] - lead)
+	return true
+
+
+## 홀드를 끝낸다. delta 는 (뗀 시각 - 떼야 할 시각).
+##
+## 뗌도 밟는 것과 같은 판정창을 쓴다 — 그래야 홀드가 '누르고 기다리기'가 아니라
+## 리듬이 된다. 판정 수가 하나 늘어나므로 _judged_total 도 홀드를 두 번 센다.
+func _release_hold(delta: float) -> void:
+	var tile := _hold_tile
+	_hold_tile = -1
+	if not AudioClock.is_warm() or _finished:
+		return
+	_judge.judge_input(delta, tile)
 
 
 ## 판정 커서만 전진시킨다. 행성 역할 교체와 공전 재설정은 렌더 커서가 한다.
@@ -470,6 +583,8 @@ func _on_song_finished(failed := false) -> void:
 			_score.count_of(Judge.Verdict.TOO_LATE)]
 		+ "최대 콤보 %d    ·    타일 %d / %d    ·    진행 %.0f%%\n" % [
 			_score.max_combo, _score.total, _judged_total, prog]
+		# 체크포인트를 밝히지 않으면 무한 부활로 낸 S 와 한 번에 낸 S 가 같아 보인다.
+		+ ("체크포인트 %d회 사용\n" % _checkpoints_used if _checkpoints_used > 0 else "")
 		+ "판정 오차 평균 %+.1fms   표준편차 %.1fms" % [s.mean, s.sd]
 	)
 	# 실플레이만 기록에 남긴다(테스트 오염 방지 — _real_play 주석 참고).
