@@ -386,7 +386,12 @@ def write_wav(path, samples):
 def main():
     buf, onsets, total_beats = build()
     gaps = verify(onsets)
-    buf = normalize(buf)
+    # 기준 곡도 다른 곡과 같은 경로를 탄다. 피크 정규화로 두면 TARGET_RMS 와
+    # 맞는 게 '우연'이 된다 — 이 파일의 곡 내용이 바뀌는 순간 조용히 어긋나고,
+    # 그러면 판정 효과음 균형의 기준선이 통째로 흔들린다.
+    # (TARGET_RMS 를 원래 이 파일에서 땄으니 순환이지만, 그래서 오히려 맞다:
+    #  상수는 '고른 크기'이고 기준 곡도 다른 곡처럼 거기에 맞춰지는 것이다.)
+    buf = loudness_normalize(buf)
 
     os.makedirs(os.path.join(HERE, "assets"), exist_ok=True)
     wav = os.path.join(HERE, "assets", "song_140.wav")

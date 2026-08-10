@@ -109,6 +109,24 @@ def main():
     gap = abs(db(rms(so)) - db(rms(loudness_normalize(mono))))
     ok(gap < 1.5, "모노와의 차이가 곡 간 편차 급을 안 넘는다 — %.2fdB" % gap)
 
+    print("\n기준 곡도 같은 경로를 탄다")
+    # song_140.wav 는 TARGET_RMS 를 딴 기준 곡이다. 피크 정규화로 두면 상수와
+    # 맞는 게 '우연'이 되고, 곡 내용이 바뀌는 순간 조용히 어긋난다 —
+    # 그러면 판정 효과음 균형의 기준선이 통째로 흔들린다.
+    import wave as _w, struct as _s
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "assets", "song_140.wav")
+    if os.path.exists(path):
+        f = _w.open(path)
+        raw = f.readframes(f.getnframes())
+        smp = _s.unpack("<%dh" % (len(raw) // 2), raw)
+        got = db(math.sqrt(sum(float(v) * v for v in smp) / len(smp)) / 32768)
+        ok(abs(got - db(TARGET_RMS)) < 0.1,
+           "기준 곡이 TARGET_RMS 에 앉아 있다 — %.3fdB (목표 %.3f)"
+           % (got, db(TARGET_RMS)))
+    else:
+        print("  --   song_140.wav 없음 (gen_all.sh 전) — 건너뜀")
+
     print("\n경계 입력")
     ok(loudness_normalize([]) == [], "빈 버퍼")
     ok(loudness_normalize([0.0] * 1000) == [0.0] * 1000, "무음은 그대로(0 나눗셈 없음)")
