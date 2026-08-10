@@ -84,6 +84,31 @@ def main():
        "극단 크레스트는 목표에 못 미친다(의도) — %.1fdB" % db(rms(ext)))
     ok(max(map(abs, ext)) <= 0.89 + 1e-9, "그래도 천장은 지킨다")
 
+    print("\n스테레오 인터리브 (원곡 오디오 경로)")
+    # L=R 인 신호를 넣으면, 나온 뒤 벌어진 정도가 곧 '채널 연동이 깨진 정도'다.
+    # 채널을 갈라 따로 정규화하면 여기가 크게 벌어지고 이미지가 좌우로 흔들린다.
+    frames = 100000
+    mono = tone(frames, 0.05)
+    for i in range(0, frames, 1500):
+        mono[i] = 0.95
+    inter = []
+    for v in mono:
+        inter += [v, v]
+    so = loudness_normalize(inter)
+    lch, rch = so[0::2], so[1::2]
+    worst = max(abs(db(abs(l)) - db(abs(r)))
+                for l, r in zip(lch, rch) if abs(l) > 1e-6 and abs(r) > 1e-6)
+    ok(worst < 0.2,
+       "L/R 게인 차가 가청 한계 훨씬 아래 — 최대 %.4fdB (블록 안 보간 몫)" % worst)
+    ok(max(map(abs, so)) <= 0.89 + 1e-9, "스테레오도 천장 이하")
+    # 모노와 완전히 같지는 않다. 블록이 '샘플' 단위(64)라 인터리브 스테레오에서는
+    # 같은 64샘플이 32프레임 = 절반 시간이고, 그만큼 리미터가 빠르게 따라간다
+    # (덜 누르니 조금 더 크게 앉는다). 실측 0.87dB — 곡 간 편차(0.7dB)와 같은
+    # 급이라 실제로는 문제가 안 됐다(원곡 스테레오 곡이 -15.02dB 로 가장 정확했다).
+    # 이 값이 커지면 블록을 프레임 단위로 바꿔야 한다는 신호다.
+    gap = abs(db(rms(so)) - db(rms(loudness_normalize(mono))))
+    ok(gap < 1.5, "모노와의 차이가 곡 간 편차 급을 안 넘는다 — %.2fdB" % gap)
+
     print("\n경계 입력")
     ok(loudness_normalize([]) == [], "빈 버퍼")
     ok(loudness_normalize([0.0] * 1000) == [0.0] * 1000, "무음은 그대로(0 나눗셈 없음)")
