@@ -23,9 +23,11 @@ fi
 step "0/10 임포트"
 [ -n "$SKIP_IMPORT" ] || "$GODOT" --headless --import >/dev/null 2>&1
 
-step "1/10 midilib + 홀드 배치 (Python 단독)"
+step "1/10 Python 단독 (midilib · 홀드 · 라우드니스 · 선택 판단)"
 python3 tools/test_midilib.py
 python3 tools/test_holds.py
+python3 tools/test_audio.py
+python3 tools/test_midi2song.py
 
 step "2/10 단위 (ChartRuntime 순수 함수)"
 "$GODOT" --headless --script res://tests/run_tests.gd
