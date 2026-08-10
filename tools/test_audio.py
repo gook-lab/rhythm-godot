@@ -35,6 +35,15 @@ def db(x):
     return 20.0 * math.log10(x) if x > 0 else -999.0
 
 
+def wav_rms_db(path):
+    """WAV 파일의 RMS(dBFS). 인터리브면 양 채널 평균이 된다."""
+    import wave as _w, struct as _s
+    f = _w.open(path)
+    raw = f.readframes(f.getnframes())
+    smp = _s.unpack("<%dh" % (len(raw) // 2), raw)
+    return db(math.sqrt(sum(float(v) * v for v in smp) / len(smp)) / 32768)
+
+
 def tone(n, amp, period=100):
     return [amp * math.sin(2 * math.pi * i / period) for i in range(n)]
 
@@ -109,18 +118,36 @@ def main():
     gap = abs(db(rms(so)) - db(rms(loudness_normalize(mono))))
     ok(gap < 1.5, "모노와의 차이가 곡 간 편차 급을 안 넘는다 — %.2fdB" % gap)
 
+    print("\n생성된 곡 전부가 같은 크기로 앉아 있다")
+    # 알고리즘이 맞아도 산출물이 어긋날 수 있다 — 도구를 고친 뒤 재렌더를 빠뜨리거나,
+    # 믹스(드럼 레벨 등)가 바뀌어 리미터가 더 눌리면 그렇다. 기준 곡 하나만 재면
+    # 나머지 14곡이 어긋나도 스위트가 못 잡는다. 그래서 전부 잰다.
+    import glob as _g
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    wavs = sorted(_g.glob(os.path.join(root, "assets", "mureka_*.wav"))
+                  + _g.glob(os.path.join(root, "assets", "song_140.wav")))
+    if wavs:
+        levels = []
+        for w in wavs:
+            levels.append((os.path.basename(w), wav_rms_db(w)))
+        lo = min(v for _, v in levels)
+        hi = max(v for _, v in levels)
+        worst = max(levels, key=lambda kv: abs(kv[1] - db(TARGET_RMS)))
+        ok(hi - lo < 2.0,
+           "%d곡 편차가 좁다 — %.2f ~ %.2fdB (폭 %.2f)" % (len(levels), lo, hi, hi - lo))
+        ok(abs(worst[1] - db(TARGET_RMS)) < 2.0,
+           "목표에서 가장 먼 곡도 2dB 안 — %s %.2fdB" % worst)
+    else:
+        print("  --   생성된 곡 없음 (gen_all.sh 전) — 건너뜀")
+
     print("\n기준 곡도 같은 경로를 탄다")
     # song_140.wav 는 TARGET_RMS 를 딴 기준 곡이다. 피크 정규화로 두면 상수와
     # 맞는 게 '우연'이 되고, 곡 내용이 바뀌는 순간 조용히 어긋난다 —
     # 그러면 판정 효과음 균형의 기준선이 통째로 흔들린다.
-    import wave as _w, struct as _s
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "assets", "song_140.wav")
     if os.path.exists(path):
-        f = _w.open(path)
-        raw = f.readframes(f.getnframes())
-        smp = _s.unpack("<%dh" % (len(raw) // 2), raw)
-        got = db(math.sqrt(sum(float(v) * v for v in smp) / len(smp)) / 32768)
+        got = wav_rms_db(path)
         ok(abs(got - db(TARGET_RMS)) < 0.1,
            "기준 곡이 TARGET_RMS 에 앉아 있다 — %.3fdB (목표 %.3f)"
            % (got, db(TARGET_RMS)))
