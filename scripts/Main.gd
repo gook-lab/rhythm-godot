@@ -47,6 +47,12 @@ const COUNTDOWN_BEATS := 4
 ## 정확히 그 타일에 떨어뜨리면 되살아나는 순간이 곧 판정 순간이라 못 친다.
 const REVIVE_LEAD_MS := 1600.0
 
+## 마지막 타일을 밟고 결과 화면이 뜨기까지의 여유(ms).
+## 0 이면 마지막 히트와 동시에 결과가 떠서 곡이 잘리는 느낌이 난다 —
+## 실플레이 피드백 그대로다. 이 동안(그리고 결과가 뜬 뒤에도) 음악은
+## 끊지 않고 자연히 끝까지 재생한다. 끊는 건 실패했을 때뿐이다.
+const OUTRO_GRACE_MS := 1500.0
+
 @export var chart: Chart
 
 @onready var _path: TilePath = $World/Path
@@ -118,6 +124,28 @@ var _hold_tile := -1
 var _hold_key := 0
 var _hold_end_ms := 0.0
 
+## ── 리플레이 ─────────────────────────────────────────────────
+## 기록은 키 입력이 아니라 '판정 결과'다 — (종류, 타일, delta).
+## 재생은 기록된 delta 를 그대로 먹이므로 점수·등급·산포가 비트 단위로
+## 재현된다. 프레임 양자화로 몇 ms 늦게 발화해도 판정은 안 흔들린다 —
+## 시각을 다시 재는 게 아니라 delta 를 재판정하니까.
+## 미스와 체크포인트 부활은 기록하지 않는다: 같은 판정 열이면 감시자와
+## 체력이 알아서 같은 자리에서 재현한다(부활의 되감기도 순차 재생이 견딘다 —
+## 발화 조건이 '클럭 >= 목표시각'이라 클럭이 되감겨도 다음 이벤트가 기다린다).
+## 전 타일 판정 완료 후 결과 화면까지의 유예 상태.
+var _outro := false
+var _outro_at := 0.0
+
+var _rec: Array = []            # 이번 판의 기록 [[종류, 타일, delta], ...]
+var _last_replay: Array = []    # 마지막 실플레이 기록 (결과 화면 V)
+var _replay_mode := false
+var _replay_idx := 0
+
+## 오토플레이 데모 — 매 타일을 delta 0 으로 밟는 봇. 채보 감상·검수용이다.
+## "항상 정확"이 요구사항이라 사람 입력 경로의 프레임 오차조차 안 태운다:
+## 기록된 delta 를 먹이는 리플레이와 같은 통로(_apply_press)에 0 을 먹인다.
+var _auto_mode := false
+
 ## 마지막 프레임의 공전 진행률. 회귀 테스트가 읽는다 —
 ## 이 값이 1.0 에 오래 붙어 있으면 행성이 얼어 있다는 뜻이다.
 var _last_u := 0.0
@@ -160,6 +188,7 @@ func _ready() -> void:
 	# 캘리브레이션이 아니라 고문이다. (connect 전이라 신호는 안 난다)
 	if _real_play:
 		_offset_slider.value = Records.offset_ms
+		_load_replay()   # 지난 세션의 마지막 완주도 V 로 볼 수 있게
 	_offset_slider.value_changed.connect(_on_offset_changed)
 	_on_offset_changed(_offset_slider.value)
 	# 순서 중요: Main 이 '끊기기 직전 콤보'를 알아야 하므로 Score 보다 먼저 받는다.
@@ -188,6 +217,10 @@ func _restart() -> void:
 	_prev_combo = 0
 	_checkpoints_used = 0
 	_hold_tile = -1
+	_replay_idx = 0
+	_outro = false
+	if not _replay_mode:
+		_rec = []
 	_popup.text = ""
 	_score.reset()   # 표본(deltas)은 남긴다 — 산포 측정이 세션 단위다
 	_planets.clear_trails()
@@ -207,6 +240,7 @@ func _restart() -> void:
 	_camera.position = _camera_target(1, 0.0)
 	_camera.offset = Vector2.ZERO
 	_camera.reset_smoothing()
+	_path.set_view(_camera.position, 1050.0)
 	AudioClock.start(chart.audio)
 
 
@@ -292,6 +326,38 @@ func _process(delta: float) -> void:
 		return
 	var t := AudioClock.judged_ms()
 
+	# ── 오토플레이 데모: 매 타일을 그 시각에 delta 0 으로 밟는다.
+	if _auto_mode:
+		while _idx < _hit_times.size() and t >= _hit_times[_idx]:
+			_apply_press(_idx, 0.0, KEY_SPACE)
+		if _hold_tile >= 0 and t >= _hold_end_ms:
+			_release_hold(0.0)
+
+	# ── 리플레이: 기록된 판정을 그 시각에 다시 먹인다.
+	# 감시자보다 먼저 돌아야 한다 — 프레임 양자화로 발화가 몇 ms 밀릴 때
+	# 같은 프레임의 감시자가 그 타일을 미스로 채가면 안 된다.
+	if _replay_mode:
+		while _replay_idx < _last_replay.size():
+			var ev: Array = _last_replay[_replay_idx]
+			var tile := int(ev[1])
+			var d := float(ev[2])
+			if String(ev[0]) == "p":
+				if _idx > tile:
+					_replay_idx += 1   # 경계에서 감시자가 선점 — 기록상 다음으로
+					continue
+				if _idx != tile or t < _hit_times[tile] + d:
+					break
+				_replay_idx += 1
+				_apply_press(tile, d, KEY_SPACE)
+			else:
+				if _hold_tile < 0:
+					_replay_idx += 1   # 홀드가 이미 닫혔다(감시자 미스)
+					continue
+				if t < _hold_end_ms + d:
+					break
+				_replay_idx += 1
+				_release_hold(d)
+
 	# ── 판정 커서: 기한이 지난 타일을 Miss 로 확정하고 전진한다.
 	# while 인 이유: 랙 스파이크가 나면 한 프레임에 여러 타일이 동시에 만료된다.
 	while _idx < _hit_times.size() and t > _hit_times[_idx] + _judge.miss_ms:
@@ -318,7 +384,13 @@ func _process(delta: float) -> void:
 		return
 
 	if _idx >= _hit_times.size():
-		_on_song_finished()
+		# 전부 판정됐다. 바로 결과를 띄우지 않는다 — 마지막 히트의 여운이
+		# 남아 있고 음악도 아직 흐른다. 유예 뒤에 결과만 얹고 곡은 계속 튼다.
+		if not _outro:
+			_outro = true
+			_outro_at = t + OUTRO_GRACE_MS
+		if t >= _outro_at:
+			_on_song_finished()
 		return
 
 	# 공전각은 렌더 커서로, 판정과 같은 t 에서 파생한다.
@@ -336,6 +408,9 @@ func _process(delta: float) -> void:
 	# '흔들림'이 아니라 '느린 표류'가 된다.
 	_camera.position = _camera_target(vi, u)
 	_camera.offset = _shake_offset()
+	# 가상 렌더링: 경로가 화면 근처 타일만 그리게 카메라 중심을 알려준다.
+	# 반지름 = 뷰포트 반대각(~734px) + 이동 마진.
+	_path.set_view(_camera.position, 1050.0)
 
 	_update_hud(t)
 
@@ -389,7 +464,8 @@ func _input(event: InputEvent) -> void:
 	# '뗌'은 홀드에서만 의미가 있다. pressed 필터보다 먼저 봐야 한다 —
 	# 아래로 내려가면 not k.pressed 에서 통째로 버려진다.
 	if not k.pressed:
-		if _hold_tile >= 0 and k.keycode == _hold_key:
+		# 리플레이 중 실제 손이 키를 떼도 재생 중인 홀드를 끊으면 안 된다.
+		if _hold_tile >= 0 and k.keycode == _hold_key and not _replay_mode:
 			_release_hold(AudioClock.judged_ms() - _hold_end_ms)
 		return
 	if k.keycode == KEY_ESCAPE:
@@ -398,11 +474,40 @@ func _input(event: InputEvent) -> void:
 		else:
 			_toggle_pause()
 		return
+	# 곡 중간에 그만두고 싶을 때: ESC(일시정지) -> Q. 실수로 한 번에
+	# 못 나가게 두 단계로 둔다 — 판정키가 거의 모든 키라 오폭이 잦다.
+	if k.keycode == KEY_Q and _paused:
+		get_tree().change_scene_to_file("res://scenes/SongSelect.tscn")
+		return
 	if k.keycode == KEY_R:
+		_replay_mode = false   # 리플레이/오토 중 R = 끝내고 직접 친다
+		_auto_mode = false
 		_restart()
+		return
+	if k.keycode == KEY_V and _finished and _last_replay.size() > 0:
+		_start_replay()
+		return
+	# 오토플레이 데모: 결과·일시정지 화면에서 O. 봇이 전 타일을 delta 0 으로
+	# 밟는다 — 채보를 눈과 귀로 검수하는 모드다. 기록·리플레이엔 안 남는다.
+	if k.keycode == KEY_O and (_finished or _paused):
+		_replay_mode = false
+		_auto_mode = true
+		_restart()
+		return
+	# 자동 보정: 결과 화면에서 A — 이번 판의 평균 오차를 오프셋에 얹는다.
+	# 평균이 +80ms 인데 슬라이더를 손으로 더듬게 하면 캘리브레이션이 아니라
+	# 고문이다(블루투스 이어폰은 150~250ms 가 예사다).
+	if k.keycode == KEY_A and _finished:
+		var st := _score.delta_stats()
+		if st.n >= 4 and absf(float(st.mean)) >= 10.0:
+			_offset_slider.value = clampf(
+				_offset_slider.value + float(st.mean),
+				_offset_slider.min_value, _offset_slider.max_value)
 		return
 	if _paused or _finished:
 		return
+	if _replay_mode or _auto_mode:
+		return   # 리플레이·오토는 보는 시간이다 — 판정 입력을 받지 않는다
 	# 판정키 필터. 기본(바인딩 없음)은 얼불춤처럼 거의 모든 키 — 양손 교타가
 	# 가능해야 빠른 구간에서 손맛이 산다. 곡 선택 화면의 K 메뉴에서 키를
 	# 지정했으면 그 키들만 받는다. 테스트·직접 실행은 항상 '전부 허용'이다 —
@@ -432,8 +537,57 @@ func _input(event: InputEvent) -> void:
 	if delta < -_judge.miss_ms:
 		return
 
-	var tapped := _idx
+	_apply_press(_idx, delta, k.keycode)
+
+
+## 마지막 기록을 재생한다. 판정 입력은 막히고(_input 가드) 기록이 대신 친다.
+func _start_replay() -> void:
+	_replay_mode = true
+	_restart()
+
+
+const REPLAY_DIR := "user://replays"
+
+
+func _replay_file() -> String:
+	var base := chart.resource_path.get_file().get_basename()
+	if base == "":
+		base = chart.title   # 테스트 주입 차트(resource_path 없음) 폴백
+	return REPLAY_DIR + "/" + base + ".json"
+
+
+## 실플레이(_real_play)만 디스크에 남긴다 — 테스트 러너가 사용자 파일을
+## 오염시키면 안 된다는 규약(InputRunner 머리말)과 같은 이유다.
+func _save_replay() -> void:
+	DirAccess.make_dir_recursive_absolute(REPLAY_DIR)
+	var f := FileAccess.open(_replay_file(), FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_string(JSON.stringify({
+		"chart": chart.resource_path,
+		"acc": _score.accuracy(),
+		"rank": _score.rank(),
+		"events": _last_replay,
+	}))
+
+
+func _load_replay() -> void:
+	var f := FileAccess.open(_replay_file(), FileAccess.READ)
+	if f == null:
+		return
+	var d: Variant = JSON.parse_string(f.get_as_text())
+	if d is Dictionary and d.get("events") is Array:
+		_last_replay = d["events"]
+
+
+## 밟기의 공통 코어. 실입력(_input)과 리플레이가 같은 경로를 탄다 —
+## 갈라두면 언젠가 한쪽만 고쳐져 리플레이가 거짓말을 하게 된다.
+func _apply_press(tapped: int, delta: float, keycode: int) -> void:
+	if (_replay_mode or _auto_mode) and Records.sfx_enabled:
+		_hitsound.play()   # 실입력은 _input 이 이미 냈다(판정 전 즉시 피드백)
 	_judge.judge_input(delta, tapped)
+	if not _replay_mode and not _auto_mode:
+		_rec.append(["p", tapped, delta])
 	_advance()
 	# 홀드 타일이면 여기서 '누르고 있기'가 시작된다.
 	# 미스로 밟은 경우에도 시작한다 — 안 그러면 한 번 놓친 뒤 남은 홀드가
@@ -441,7 +595,7 @@ func _input(event: InputEvent) -> void:
 	var orbits := ChartRuntime.hold_orbits_at(chart, tapped)
 	if orbits > 0.0:
 		_hold_tile = tapped
-		_hold_key = k.keycode
+		_hold_key = keycode
 		_hold_end_ms = _hit_times[tapped] + ChartRuntime.hold_beats_at(chart, tapped) \
 			* (60000.0 / chart.bpm) / ChartRuntime.speed_mult_at(chart, tapped)
 
@@ -493,6 +647,8 @@ func _release_hold(delta: float) -> void:
 	if not AudioClock.is_warm() or _finished:
 		return
 	_judge.judge_input(delta, tile)
+	if not _replay_mode and not _auto_mode:
+		_rec.append(["r", tile, delta])
 
 
 ## 판정 커서만 전진시킨다. 행성 역할 교체와 공전 재설정은 렌더 커서가 한다.
@@ -552,13 +708,23 @@ func _on_song_finished(failed := false) -> void:
 	if _finished:
 		return
 	_finished = true
-	AudioClock.stop()
+	# 완주면 음악을 끊지 않는다 — 결과 위로 자연히 끝까지 흐른다.
+	# 실패는 끊는 게 맞다: 죽었는데 곡이 계속 나오면 죽은 줄 모른다.
+	if failed:
+		AudioClock.stop()
 	_countdown.text = ""
 	_popup.text = ""
+	# 이번 판이 실플레이 기록이면 리플레이로 보관한다(결과 화면 V).
+	if not _replay_mode and not _auto_mode and _rec.size() > 0:
+		_last_replay = _rec.duplicate(true)
+		if _real_play:
+			_save_replay()
 	var s := _score.delta_stats()
 
 	var acc := _score.accuracy()
 	var rank := "F" if failed else _score.rank()
+	if _replay_mode:
+		_r_headline.modulate = Color(0.7, 0.9, 1.0)
 	var prog := clampf(_progress_pct(), 0.0, 100.0)
 	_song_progress.value = prog
 	_r_rank.text = rank
@@ -586,10 +752,17 @@ func _on_song_finished(failed := false) -> void:
 		# 체크포인트를 밝히지 않으면 무한 부활로 낸 S 와 한 번에 낸 S 가 같아 보인다.
 		+ ("체크포인트 %d회 사용\n" % _checkpoints_used if _checkpoints_used > 0 else "")
 		+ "판정 오차 평균 %+.1fms   표준편차 %.1fms" % [s.mean, s.sd]
+		+ ("\n\nV 내 플레이 리플레이" if _last_replay.size() > 0 else "")
+		+ "   ·   O 오토플레이 데모"
+		+ ("\nA 자동 보정 (평균 %+.0fms 를 오프셋에 반영)" % s.mean
+			if s.n >= 4 and absf(s.mean) >= 10.0 and not _replay_mode
+				and not _auto_mode else "")
 	)
 	# 실플레이만 기록에 남긴다(테스트 오염 방지 — _real_play 주석 참고).
 	# 무엇이 갱신됐는지가 반환되므로 결과 화면에 '신기록'을 바로 보여줄 수 있다.
-	if _real_play:
+	# 리플레이·오토는 기록에 못 오른다 — 실제로 리플레이 실패가 '진행 신기록'을
+	# 덮어쓴 사고가 있었다(스크린샷 증거). 본 게 아니라 '친 것'만 기록이다.
+	if _real_play and not _replay_mode and not _auto_mode:
 		var imp: Dictionary = Records.record_play(
 			GameState.selected_chart, acc, rank, _score.max_combo, prog, not failed)
 		var marks := PackedStringArray()
@@ -645,7 +818,8 @@ func _update_hud(t: float) -> void:
 	var prog := _progress_pct()
 	_song_progress.value = prog
 	_hud_progress.text = "%.0f%%" % prog
-	_hud_score.text = _score.summary_line()
+	_hud_score.text = ("AUTO   " if _auto_mode else "REPLAY   " if _replay_mode else "") \
+		+ _score.summary_line()
 	_health.value = _score.health
 	_health.modulate = Color(1.0, 0.45, 0.45) if _score.health < 30.0 \
 		else (Color(1.0, 0.9, 0.5) if _score.health < 60.0 else Color(0.5, 1.0, 0.7))

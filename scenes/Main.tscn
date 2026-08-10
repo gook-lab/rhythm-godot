@@ -202,7 +202,7 @@ text = "일시정지"
 [node name="H" type="Label" parent="UI/PausePanel/VBox"]
 theme_override_font_sizes/font_size = 15
 horizontal_alignment = 1
-text = "ESC 재개 · R 재시작"
+text = "ESC 재개 · R 재시작 · Q 곡 선택"
 
 [node name="HUD" type="VBoxContainer" parent="UI"]
 anchor_left = 1.0
@@ -268,8 +268,8 @@ text = "오프셋 +0 ms"
 
 [node name="OffsetSlider" type="HSlider" parent="UI/CalibrationPanel/VBox"]
 custom_minimum_size = Vector2(288, 0)
-min_value = -150.0
-max_value = 150.0
+min_value = -250.0
+max_value = 400.0
 step = 1.0
 
 [node name="Hint" type="Label" parent="UI/CalibrationPanel/VBox"]

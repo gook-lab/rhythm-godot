@@ -12,7 +12,7 @@ extends Node
 ##
 ## ── 판정창은 BPM 에 따라 좁아진다 ──────────────────────────────────
 ## 얼불춤이 그렇게 하고, 안 하면 물리적으로 깨진다.
-## 고정 +-110ms 로 두면 인접 타일 간격이 220ms 밑으로 내려가는 순간
+## 고정 +-80ms 로 두면 인접 타일 간격이 160ms 밑으로 내려가는 순간
 ## 판정창이 겹쳐서 한 번 누른 입력이 두 타일 모두에 유효해진다.
 ##
 ##   0.5박 @ 120bpm -> 간격 250ms -> 여유 30ms       (아슬아슬)
@@ -38,20 +38,25 @@ enum Verdict {
 }
 
 ## 기준 판정창(ms). 느린 곡에서의 상한이고, 빠른 구간에선 아래 캡에 눌린다.
-## 계측으로 자기 손의 산포가 나온 뒤에 다시 조인다 —
-## 산포가 20ms 인데 Perfect 창이 30ms 면 그건 난이도가 아니라 운이다.
-@export var base_perfect_ms: float = 30.0
-@export var base_very_ms: float = 60.0
-@export var base_miss_ms: float = 110.0
+##
+## 2026-08-10 에 110/60/30 -> 80/45/25 로 조였다. 근거 둘:
+##   1. 계측이 끝났다 — 실측 사람 산포가 σ 20~30ms 라 Perfect ±25 는
+##      실력이 갈리는 폭이고, ±30 은 절반쯤 운이었다.
+##   2. 채보 밀도를 원작 엑스트라급(체감 BPM p95 364~556)까지 올렸는데
+##      ±110 미스 창에서는 100ms 어긋나도 안 죽어서 난이도가 헛돌았다.
+##      "다 쉽다"의 절반은 채보가 아니라 판정이 후해서였다.
+@export var base_perfect_ms: float = 25.0
+@export var base_very_ms: float = 45.0
+@export var base_miss_ms: float = 80.0
 
 ## 판정창이 이웃 타일까지 갈 수 있는 비율. 1.0 이면 정확히 중간에서 맞닿는다.
 ## 0.9 로 두어 맞닿기 전에 멈춘다.
 @export var overlap_guard: float = 0.9
 
 ## 현재 타일에 적용 중인 창(디버그 표시용). set_gaps() 가 갱신한다.
-var perfect_ms: float = 30.0
-var very_ms: float = 60.0
-var miss_ms: float = 110.0
+var perfect_ms: float = 25.0
+var very_ms: float = 45.0
+var miss_ms: float = 80.0
 
 signal judged(verdict: Verdict, delta_ms: float, tile: int)
 

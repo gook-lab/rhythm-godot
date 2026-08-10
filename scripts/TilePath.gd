@@ -67,6 +67,15 @@ var _mid_set := {}
 var _cp_set := {}
 var _hold_at := {}     # tile -> 바퀴 수
 var _speed_at := {}     # tile -> [배율, 빨라짐 여부]
+## ── 가상 렌더링(뷰포트 컬링) ─────────────────────────────────
+## 850타일 채보를 커서가 움직일 때마다 전부 다시 그리면(타일당 둥근 폴리곤
+## 20점 + 마커) 촘촘한 구간에서 히치가 난다 — 실측 fps 28까지.
+## 화면 근처 타일만 그린다. 카메라가 따라오는 게임이라 보이는 건 늘 커서
+## 주변 30~60개다. 목록 가상화(react virtual list)와 같은 발상이다.
+var _view := Vector2.INF     # 카메라 중심. INF 면 컬링 없음(전체 그리기)
+var _view_r2 := INF
+var _drawn_view := Vector2.INF
+
 var _cursor := 1        # 지금 밟아야 할 타일
 var _last_cursor := -1
 
@@ -125,6 +134,21 @@ func setup(positions: PackedVector2Array, angles: PackedFloat32Array, side: floa
 			if sc.y > 0.0 and not is_equal_approx(sc.y, prev):
 				_speed_at[int(sc.x)] = [sc.y, sc.y > prev]
 	queue_redraw()
+
+
+## 카메라 중심을 알려준다. 매 프레임 불러도 싸다 — 반지름의 1/4 이상
+## 움직였을 때만 다시 그린다(그 안쪽은 여유 마진이 덮는다).
+func set_view(center: Vector2, radius: float) -> void:
+	_view = center
+	_view_r2 = radius * radius
+	if _drawn_view == Vector2.INF \
+			or _drawn_view.distance_squared_to(center) > _view_r2 * 0.0625:
+		queue_redraw()
+
+
+func _visible(i: int) -> bool:
+	return _view == Vector2.INF \
+		or _positions[i].distance_squared_to(_view) <= _view_r2
 
 
 ## 매 프레임 부르되, 값이 바뀔 때만 다시 그린다.
@@ -193,14 +217,125 @@ func _process(delta: float) -> void:
 	queue_redraw()
 
 
-func _quad(center: Vector2, deg: float, half: float) -> PackedVector2Array:
+## 각도 -> 진행 방향 단위벡터.
+## 화면은 아래가 +y 라 각도의 y 를 뒤집는다(ChartRuntime.tile_positions 와 같은 규약).
+func _dir(deg: float) -> Vector2:
 	var a := deg_to_rad(deg)
-	# 화면은 아래가 +y 라 각도의 y 를 뒤집는다(ChartRuntime.tile_positions 와 같은 규약).
-	var u := Vector2(cos(a), -sin(a)) * half     # 진행 방향
-	var v := Vector2(-u.y, u.x)                  # 그 수직
-	return PackedVector2Array([
-		center - u - v, center + u - v, center + u + v, center - u + v,
-	])
+	return Vector2(cos(a), -sin(a))
+
+
+
+## 미터(팔꿈치) 길이 상한. 꺾임이 급할수록 팔꿈치 점이 밖으로 뻗는데
+## (미터 공식의 분모가 0 으로), 상한 없이 두면 165도 꺾임에서 7.7배 스파이크가
+## 된다. 잘라내면 살짝 깎인 팔꿈치(bevel)가 되고 둥글림이 마저 다듬는다.
+const MITER_MAX := 1.6
+
+
+func _shape_local(i: int, half: float) -> PackedVector2Array:
+	# 타일은 낱장 카드가 아니라 '트랙의 한 구간'이다.
+	#
+	# 세 번째 시도다. ① 두 방향 쐐기: 변은 맞물리는데 넓이가 요동치고
+	# 자기교차(나비넥타이)가 났다. ② 고정 사각형 + 이등분선 회전: 안정적이지만
+	# 꺾이는 자리마다 이웃끼리 대각선으로 겹쳐 '카드 무더기'로 보였다 —
+	# 원작 스크린샷과 나란히 놓고 보면 원작은 타일들이 이음매에서 만나
+	# 하나의 띠로 이어진다.
+	#
+	# 그래서 원작의 실제 구조로 간다: 타일 i 는
+	#   앞 이음매(이전 타일과의 중간, 들어온 방향에 수직)에서 출발해
+	#   중심에서 꺾이고
+	#   뒤 이음매(다음 타일과의 중간, 나갈 방향에 수직)에서 끝나는
+	# 폭 일정한 '굽은 도미노'다. 직선 구간은 정확히 맞닿는 직사각형이 되고
+	# (이음매 = 두 중심의 중점이므로), 꺾이는 자리는 팔꿈치가 된다.
+	# 폭도 길이도 상수라 ①의 불안정이 없고, 이음매가 맞물리니 ②의 겹침이 없다.
+	#
+	# 팔꿈치 점은 폴리라인 미터 조인 공식 그대로다:
+	#   M = ±(v_in + v_out) * half / (1 + u_in·u_out)
+	# 직선이면 ±v*half 로 퇴화해 직사각형과 일치한다(검산).
+	var n := _angles.size()
+	var out_deg: float = _angles[i] if i < n else _angles[n - 1]
+	var in_deg: float = _angles[i - 1] if i >= 1 else out_deg
+	var uin := _dir(in_deg)
+	var uout := _dir(out_deg)
+	var d := uin.dot(uout)
+	# U턴은 이음매가 겹쳐 트랙 폭이 0 이 된다. 경로가 되돌아가는 자리라
+	# 그게 맞지만 안 보이면 안 되므로 들어온 방향의 직사각형으로 둔다.
+	if d < -0.95:
+		uout = uin
+		d = 1.0
+	var vin := Vector2(-uin.y, uin.x) * half
+	var vout := Vector2(-uout.y, uout.x) * half
+	var e1 := -uin * half - vin    # 앞 이음매
+	var e2 := -uin * half + vin
+	var x1 := uout * half - vout   # 뒤 이음매
+	var x2 := uout * half + vout
+	if d > 0.999:                  # 직선 — 그냥 직사각형
+		return PackedVector2Array([e1, x1, x2, e2])
+	var m := (vin + vout) / (1.0 + d)
+	if m.length() > MITER_MAX * half:
+		m = m.normalized() * MITER_MAX * half
+	return PackedVector2Array([e1, -m, x1, x2, m, e2])
+
+
+## 모서리를 둥글린다.
+##
+## 원작 타일은 각진 사각형이 아니라 **모서리가 둥근 캡슐**이다. 이게 왜 중요하냐면,
+## 둥근 끝이 이웃과의 각도 차이를 흡수해서 어떤 각으로 꺾여도 이음매가 매끄럽다 —
+## 각진 쐐기는 90도에서 완전한 삼각형이 되어 뾰족하게 튄다.
+## 경로 끝처럼 이웃이 없는 자리에서는 반원 마감이 그대로 보인다(원작과 같다).
+##
+## 반지름은 '이 모서리에 붙은 두 변 중 짧은 쪽의 절반'으로 자른다.
+## 안 그러면 90도 코너처럼 한 변이 0 인 자리에서 도형이 뒤집힌다.
+## 0.5 는 낱장 카드 시절 값이다. 트랙(이음매 맞물림)에서는 모서리를 덜 깎아야
+## 이음매의 틈이 작아진다 — 0.4 가 원작 스크린샷과 가장 비슷했다.
+const ROUND_RATIO := 0.4     # half 대비 모서리 반지름
+const ROUND_SEG := 4         # 모서리당 보간 점 수. 4 면 60fps 에 부담 없고 충분히 둥글다
+
+
+func _round_poly(pts: PackedVector2Array, r: float) -> PackedVector2Array:
+	# 겹친 점을 먼저 지운다 — 90도 코너는 두 꼭짓점이 한 점으로 모여서
+	# 그대로 두면 길이 0 인 변이 생기고 굽힘 계산이 터진다.
+	var q := PackedVector2Array()
+	for pt in pts:
+		if q.is_empty() or q[q.size() - 1].distance_squared_to(pt) > 0.01:
+			q.append(pt)
+	while q.size() > 1 and q[0].distance_squared_to(q[q.size() - 1]) < 0.01:
+		q.remove_at(q.size() - 1)
+	if q.size() < 3:
+		return pts
+
+	var out := PackedVector2Array()
+	var n := q.size()
+	for i in range(n):
+		var cur: Vector2 = q[i]
+		var d1: Vector2 = q[(i - 1 + n) % n] - cur
+		var d2: Vector2 = q[(i + 1) % n] - cur
+		var l1 := d1.length()
+		var l2 := d2.length()
+		if l1 < 0.001 or l2 < 0.001:
+			out.append(cur)
+			continue
+		var rr := minf(r, minf(l1, l2) * 0.5)
+		var a := cur + d1 / l1 * rr
+		var b := cur + d2 / l2 * rr
+		# a -> b 를 cur 을 제어점으로 하는 2차 베지에로 잇는다.
+		# 원호와 육안으로 구분되지 않으면서 계산이 훨씬 싸다.
+		out.append(a)
+		for k in range(1, ROUND_SEG):
+			var t := float(k) / ROUND_SEG
+			out.append(a.lerp(cur, t).lerp(cur.lerp(b, t), t))
+		out.append(b)
+	return out
+
+
+## 로컬 모양을 회전·확대해 월드로 옮긴다. 낙하·임팩트가 같은 모양을 쓰게 하는 통로다.
+func _quad_of(i: int, center: Vector2, half: float, rot_deg := 0.0,
+		scale := 1.0) -> PackedVector2Array:
+	var pts := _round_poly(_shape_local(i, half), half * ROUND_RATIO)
+	var rot := deg_to_rad(-rot_deg)   # 각도는 CCW 양수, 화면은 y 반전이라 부호가 뒤집힌다
+	var out := PackedVector2Array()
+	for pt in pts:
+		out.append(center + (pt * scale).rotated(rot))
+	return out
 
 
 func _draw() -> void:
@@ -219,8 +354,11 @@ func _draw() -> void:
 	var target := _cursor
 	while target >= 0 and target < n and _ghost_set.has(target):
 		target += 1
+	_drawn_view = _view
 	for i in range(n - 1, _cursor - 1, -1):
 		if i == target:
+			continue
+		if not _visible(i):
 			continue
 		if _ghost_set.has(i):
 			_draw_tile(i, half * GHOST_SCALE, Color.TRANSPARENT, EDGE_GHOST, 1.5)
@@ -237,8 +375,7 @@ func _draw() -> void:
 		var col: Color = e[1]
 		# 커졌다 돌아오는 게 아니라 '커지면서 사라진다' — 잔상처럼 읽힌다.
 		var grow := half * (1.0 + IMPACT_SCALE * (1.0 - k))
-		var deg := _angles[t] if t < _angles.size() else 0.0
-		var q := _quad(_positions[t], deg, grow)
+		var q := _quad_of(t, _positions[t], grow)
 		draw_colored_polygon(q, Color(col.r, col.g, col.b, 0.26 * k))
 		var outline := q.duplicate()
 		outline.append(q[0])
@@ -258,21 +395,19 @@ func _draw_falling(t: int, half: float) -> void:
 	var k: float = clampf(1.0 - e / FALL_SEC, 0.0, 1.0)   # 1 -> 0
 	var vel: Vector2 = f[1]
 	var pos: Vector2 = _positions[t] + vel * e + Vector2(0, 0.5 * FALL_GRAVITY * e * e)
-	var deg: float = (_angles[t] if t < _angles.size() else 0.0) + f[2] * e
-	var q := _quad(pos, deg, half * (0.55 + 0.45 * k))
+	var q := _quad_of(t, pos, half * (0.55 + 0.45 * k), f[2] * e)
 	draw_colored_polygon(q, Color(FILL_PASSED.r, FILL_PASSED.g, FILL_PASSED.b,
 		FILL_PASSED.a * k * 2.2))
 	var outline := q.duplicate()
 	outline.append(q[0])
 	draw_polyline(outline, Color(EDGE_PASSED.r, EDGE_PASSED.g, EDGE_PASSED.b,
 		EDGE_PASSED.a * k), 1.5, true)
-	_draw_markers(t, pos, f[2] * e, k)
+	_draw_markers(t, pos, f[2] * e, k, 0.55 + 0.45 * k)
 
 
 func _draw_tile(i: int, half: float, fill: Color, edge: Color, edge_w: float) -> void:
 	# angles[i] 는 타일 i 에서 나갈 방향. 마지막 타일은 그 앞을 따른다.
-	var deg := _angles[i] if i < _angles.size() else _angles[_angles.size() - 1]
-	var q := _quad(_positions[i], deg, half)
+	var q := _quad_of(i, _positions[i], half)
 	draw_colored_polygon(q, fill)
 	var outline := q.duplicate()
 	outline.append(q[0])
@@ -281,31 +416,83 @@ func _draw_tile(i: int, half: float, fill: Color, edge: Color, edge_w: float) ->
 
 
 ## 타일 위 마커. 낙하 중에도 같은 변환(위치·회전·투명도)으로 따라간다.
-func _draw_markers(tile: int, center: Vector2, rot_deg: float, alpha: float) -> void:
+## 마커가 들어갈 자리와 크기.
+##
+## 타일 모양이 종류마다 달라진 뒤(쐐기·마름모·길쭉) 마커를 예전처럼 '타일 좌표에
+## 고정 크기'로 그리면 좁은 쐐기에서 도형 밖으로 삐져나가 잘린 것처럼 보인다.
+## 실제로 그랬다 — 90도 코너의 삼각형 타일에서 중간회전 겹고리가 밖으로 나갔다.
+##
+## 두 가지를 도형에서 가져온다:
+##   자리 = 면적 가중 무게중심 (쐐기는 타일 좌표가 도형 중심이 아니다)
+##   크기 = 그 점에서 변까지의 최단거리(내접원) / 정사각형일 때의 값(half)
+##
+## 정사각형이면 무게중심 = 원점, 내접반경 = half 라 배율이 정확히 1.0 —
+## 즉 예전 채보에서는 한 픽셀도 안 바뀐다.
+const MARKER_MIN_SCALE := 0.5   # 이보다 줄이면 무슨 표시인지 못 읽는다
+
+
+func _marker_fit(tile: int, half: float) -> Array:
+	var pts := _shape_local(tile, half)
+	var n := pts.size()
+	var a2 := 0.0
+	var c := Vector2.ZERO
+	for k in range(n):
+		var p0: Vector2 = pts[k]
+		var p1: Vector2 = pts[(k + 1) % n]
+		var cr := p0.cross(p1)
+		a2 += cr
+		c += (p0 + p1) * cr
+	if absf(a2) < 0.001:
+		return [Vector2.ZERO, MARKER_MIN_SCALE]
+	c /= 3.0 * a2
+	var inr := INF
+	for k in range(n):
+		var p0: Vector2 = pts[k]
+		var e: Vector2 = pts[(k + 1) % n] - p0
+		var l := e.length()
+		if l < 0.001:
+			continue
+		inr = minf(inr, absf(e.cross(c - p0)) / l)
+	if not is_finite(inr):
+		return [Vector2.ZERO, MARKER_MIN_SCALE]
+	return [c, clampf(inr / half, MARKER_MIN_SCALE, 1.0)]
+
+
+func _draw_markers(tile: int, center: Vector2, rot_deg: float, alpha: float,
+		size := 1.0) -> void:
+	# 도형 안쪽으로 들어오게 자리와 배율을 먼저 잡는다.
+	# 낙하 중이면 도형도 같이 돌아가므로 무게중심도 같이 돌린다.
+	var fit := _marker_fit(tile, _side * 0.5)
+	var rot := deg_to_rad(-rot_deg)
+	# size 는 낙하 중 타일이 줄어드는 비율이다. 마커가 같이 안 줄면
+	# 떨어지는 조각보다 표시가 커져 허공에 뜬 것처럼 보인다.
+	var m: float = fit[1] * size
+	var at: Vector2 = center + ((fit[0] as Vector2) * size).rotated(rot)
+
 	if _twirl_set.has(tile):
 		var spin: int = _twirl_set[tile]
 		var pts := PackedVector2Array()
 		var steps := 26
-		var rot := deg_to_rad(rot_deg)
+		var rr := deg_to_rad(rot_deg)
 		for n in range(steps + 1):
 			var f := float(n) / steps
-			var a := f * TAU * 1.6 * (1.0 if spin >= 0 else -1.0) + rot
-			var r := (6.0 + 16.0 * f)
-			pts.append(center + Vector2(cos(a), -sin(a)) * r)
+			var a := f * TAU * 1.6 * (1.0 if spin >= 0 else -1.0) + rr
+			var r := (6.0 + 16.0 * f) * m
+			pts.append(at + Vector2(cos(a), -sin(a)) * r)
 		draw_polyline(pts, Color(0.85, 0.55, 1.0, 0.9 * alpha), 2.5, true)
 	if _hold_at.has(tile):
 		var orbits: float = _hold_at[tile]
 		var col := Color(HOLD_COLOR.r, HOLD_COLOR.g, HOLD_COLOR.b,
 			HOLD_COLOR.a * alpha)
 		for n in range(int(orbits)):
-			draw_arc(center, 13.0 + n * 7.0, 0.0, TAU, 28, col, 2.4, true)
+			draw_arc(at, (13.0 + n * 7.0) * m, 0.0, TAU, 28, col, 2.4, true)
 	if _cp_set.has(tile):
-		# 마름모 = 정사각형을 45도 돌린 것. 타일(사각형)과 겹쳐도 형태가 구분된다.
-		var r := 15.0
+		# 마름모 = 정사각형을 45도 돌린 것. 타일과 겹쳐도 형태가 구분된다.
+		var r := 15.0 * m
 		var rot3 := deg_to_rad(rot_deg)
 		var dm := PackedVector2Array()
 		for n in range(5):
-			dm.append(center + Vector2(0, -r).rotated(rot3 + n * TAU / 4.0))
+			dm.append(at + Vector2(0, -r).rotated(rot3 + n * TAU / 4.0))
 		draw_polyline(dm, Color(CHECKPOINT_COLOR.r, CHECKPOINT_COLOR.g,
 			CHECKPOINT_COLOR.b, CHECKPOINT_COLOR.a * alpha), 2.6, true)
 	if _mid_set.has(tile):
@@ -314,7 +501,7 @@ func _draw_markers(tile: int, center: Vector2, rot_deg: float, alpha: float) -> 
 		var rot2 := deg_to_rad(rot_deg)
 		var dir := Vector2(cos(rot2), -sin(rot2))
 		for sgn in [-1.0, 1.0]:
-			draw_arc(center + dir * (sgn * 7.0), 11.0, 0.0, TAU, 20,
+			draw_arc(at + dir * (sgn * 7.0 * m), 11.0 * m, 0.0, TAU, 20,
 				Color(MID_COLOR.r, MID_COLOR.g, MID_COLOR.b, MID_COLOR.a * alpha),
 				2.2, true)
 	if _speed_at.has(tile):
