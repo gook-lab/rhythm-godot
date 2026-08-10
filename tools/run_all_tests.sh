@@ -23,8 +23,9 @@ fi
 step "0/10 임포트"
 [ -n "$SKIP_IMPORT" ] || "$GODOT" --headless --import >/dev/null 2>&1
 
-step "1/10 midilib (Python 단독 — 손으로 깎은 SMF 바이트)"
+step "1/10 midilib + 홀드 배치 (Python 단독)"
 python3 tools/test_midilib.py
+python3 tools/test_holds.py
 
 step "2/10 단위 (ChartRuntime 순수 함수)"
 "$GODOT" --headless --script res://tests/run_tests.gd

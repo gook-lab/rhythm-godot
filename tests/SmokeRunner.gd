@@ -151,6 +151,17 @@ func _process(delta: float) -> void:
 		# D/64.7%(미스 43) 으로 무너졌고, 단독 실행에서는 재현되지 않았다.
 		# 히치 뒤에는 어차피 정확히 맞출 수 없으니, 조금 늦는 쪽이 옳다.
 		var look: float = minf(delta * 1500.0, MAX_LOOKAHEAD_MS)
+		# 홀드 뗌: 잡은 키를 홀드 종료 시각에 놓는다 — 뗌도 판정이라 하네스가
+		# 안 놓으면 감시자가 릴리스 미스를 낸다. 앞보기 보정은 누름과 같다.
+		# 릴리스가 배달되기 전 프레임에 조건이 또 참이 되어 중복 릴리스가
+		# 나갈 수 있는데, Main 은 _hold_tile == -1 이면 무시하므로 무해하다.
+		if int(_main.get("_hold_tile")) >= 0 \
+				and float(AudioClock.judged_ms()) + look >= float(_main.get("_hold_end_ms")):
+			var rel := InputEventKey.new()
+			rel.keycode = KEY_SPACE
+			rel.physical_keycode = KEY_SPACE
+			rel.pressed = false
+			Input.parse_input_event(rel)
 		if ji < ht.size() and float(AudioClock.judged_ms()) + look >= ht[ji]:
 			var skip := miss_every > 0 and ji % miss_every == 0
 			if not skip:

@@ -168,6 +168,48 @@ MIN_ADD_GAP_MS = 150.0
 FLOOR_MS = 100.0
 
 
+# ---------------------------------------------------------------- 홀드 자동 배치
+## 한 바퀴 = 2박. 스윕이 정확히 360도라 착지가 안 바뀌는 이유이자 최소 단위인 이유.
+HOLD_ORBIT_BEATS = 2.0
+
+
+def place_holds(onsets, mel_notes, tmap, min_gap_ms):
+    """멜로디 '지속음' 위에 홀드를 놓는다. 반환: [[온셋 박, 바퀴 수], ...].
+
+    홀드는 히트타임을 뒤로 미는 유일한 타일이라(ChartRuntime 이 홉에 홀드박을
+    더한다) 오디오에 이미 동기된 온셋의 절대 박은 못 건드린다. 대신 다음
+    온셋까지의 '간격'에서 2n박을 대기 대신 홀드로 바꾼다 — 다음 타일의 시각은
+    그대로다 (2n박 홀드 + (g-2n)박 이동 = g박).
+
+    조건 세 개가 전부 음악에서 온다:
+      1. 노트가 실제로 그만큼 끌린다(dur >= 2n, 다음 온셋 초과분은 무시) —
+         지속음 위에서만. 짧은 노트를 홀드로 만들면 소리는 끝났는데 손만
+         잡혀 있는 거짓 동작이 된다.
+      2. 뗀 뒤 다음 탭까지 손을 옮길 시간(이동 구간 >= min_gap_ms) — 뗌도
+         판정이라, 뗌-다음 누름 간격은 보강 타일의 최소 간격과 같은 물리다.
+      3. 호출 시점이 속도 타일 강제 삽입 '뒤' — 템포 변경 지점은 이미 온셋이고
+         간격 안에는 온셋이 없으므로, 홀드 구간이 변경을 가로지를 수 없다.
+    """
+    dur_at = {}
+    for b, d, _p, _v in mel_notes:
+        k = round(b * GRID)
+        dur_at[k] = max(dur_at.get(k, 0.0), d)
+    holds = []
+    for i in range(len(onsets) - 1):
+        g = onsets[i + 1] - onsets[i]
+        dur = dur_at.get(round(onsets[i] * GRID), 0.0)
+        n = int(min(dur, g) // HOLD_ORBIT_BEATS)
+        while n > 0:
+            release = onsets[i] + HOLD_ORBIT_BEATS * n
+            travel_ms = (tmap.sec_at(onsets[i + 1]) - tmap.sec_at(release)) * 1000.0
+            if onsets[i + 1] - release > 1e-9 and travel_ms >= min_gap_ms:
+                break
+            n -= 1
+        if n > 0:
+            holds.append([onsets[i], float(n)])
+    return holds
+
+
 def support_layers(tracks, mel_i):
     """멜로디 외 트랙 -> 우선순위대로 정렬된 채움 후보 층 [(이름, 온셋들)]."""
     back, hats, bass, other = set(), set(), set(), set()
@@ -186,11 +228,15 @@ def support_layers(tracks, mel_i):
             ("그 외 성부", sorted(other)), ("하이햇", sorted(hats))]
 
 
-def enrich_onsets(onsets, layers, tmap, fill_above_beats, min_gap_ms, verbose=True):
+def enrich_onsets(onsets, layers, tmap, fill_above_beats, min_gap_ms,
+                  holds=(), verbose=True):
     """공백에 반주 온셋을 얹는다. 층을 순서대로 훑되 이미 메워진 공백은 건너뛴다.
 
     후보는 전부 이미 1/12 격자 위에 있다(전 트랙을 같은 격자로 스냅했으므로).
     따라서 격자·양자화 불변식은 여기서 깨질 수 없다.
+
+    holds: [[온셋 박, 바퀴]] — 홀드 구간(온셋~뗌)에는 보강을 넣지 않는다.
+    키를 잡고 있는 손은 탭을 못 친다. 최소 간격도 누름이 아니라 '뗌'에서 잰다.
     """
     # sec_at 은 템포 항목 수에 선형이라 수천 번 부르면 느리다. 격자 칸으로 메모한다.
     memo = {}
@@ -201,6 +247,8 @@ def enrich_onsets(onsets, layers, tmap, fill_above_beats, min_gap_ms, verbose=Tr
             memo[k] = tmap.sec_at(beat)
         return memo[k]
 
+    hold_end = {round(b * GRID): b + HOLD_ORBIT_BEATS * n for b, n in holds}
+
     cur = list(onsets)
     for label, pool in layers:
         if not pool:
@@ -208,6 +256,8 @@ def enrich_onsets(onsets, layers, tmap, fill_above_beats, min_gap_ms, verbose=Tr
         added = []
         for k in range(len(cur) - 1):
             a, b = cur[k], cur[k + 1]
+            # 홀드 타일이면 공백은 '뗌'부터 시작한다
+            a = hold_end.get(round(a * GRID), a)
             if b - a <= fill_above_beats + 1e-9:
                 continue
             lo = bisect.bisect_right(pool, a)
@@ -390,6 +440,11 @@ def replay_hit_times_from_tres(tres_path):
     if m:
         vals = [float(x) for x in m.group(1).split(",")]
         sc = list(zip([int(v) for v in vals[0::2]], vals[1::2]))
+    m = re.search(r"hold_tiles = PackedVector2Array\(([^)]*)\)", t)
+    hd = {}
+    if m:
+        vals = [float(x) for x in m.group(1).split(",")]
+        hd = dict(zip([int(v) for v in vals[0::2]], vals[1::2]))
 
     def mult_at(tile):
         v = 1.0
@@ -402,7 +457,9 @@ def replay_hit_times_from_tres(tres_path):
     out = [so]
     spb = 60000.0 / bpm
     for i in range(1, len(ang)):
-        out.append(out[-1] + hops[i - 1] * spb / mult_at(i - 1))
+        # 홀드박은 홉에 더해진다 — ChartRuntime.hold_beats_at 과 같은 의미론.
+        out.append(out[-1] + (hops[i - 1] + HOLD_ORBIT_BEATS * hd.get(i - 1, 0.0))
+                   * spb / mult_at(i - 1))
     # 고스트(자동 통과) 타일은 밟지 않으므로 정답(온셋 벽시계)과의 비교에서 뺀다.
     # 시간 누적에는 위에서 이미 기여했다 — 서브홉의 합이 원래 홉이다.
     return [v for i, v in enumerate(out) if i not in ghosts]
@@ -590,6 +647,10 @@ def main():
                          "(midilib.resample_tempos_at_tiles), 킥·스네어 상호상관으로 "
                          "자동 정렬 후 산포 게이트(σ%.0fms·범위%.0fms)를 통과해야 한다"
                          % (ALIGN_SD_GATE_MS, ALIGN_RANGE_GATE_MS))
+    ap.add_argument("--holds", action="store_true",
+                    help="멜로디 지속음 위에 홀드 타일 자동 배치 (한 바퀴=2박, "
+                         "다음 온셋까지의 간격에서 가져간다 — 온셋 절대 시각 불변). "
+                         "실곡 검증이 쌓이면 기본값을 뒤집는다")
     ap.add_argument("--force-synth", action="store_true",
                     help="원곡 오디오 채보를 알고도 신스 렌더로 되돌린다 "
                          "(--audio 없는 재생성이 원곡 채보를 만나면 기본은 중단)")
@@ -714,6 +775,20 @@ def main():
               % (len(inserted), ["%.4g박" % b for b in inserted[:6]],
                  " ..." if len(inserted) > 6 else ""))
 
+    # ── 홀드 자동 배치 (보강·걸음보다 먼저 — 홀드 구간엔 아무것도 못 들어간다) ──
+    hold_marks = []
+    if args.holds:
+        hold_marks = place_holds(onsets, tracks[mel_i]["notes"], tmap,
+                                 args.min_gap_ms)
+        if hold_marks:
+            orb = sum(n for _b, n in hold_marks)
+            print("  홀드 %d개 (멜로디 지속음 위 · 총 %g바퀴 = %g박): %s%s"
+                  % (len(hold_marks), orb, orb * HOLD_ORBIT_BEATS,
+                     ["%.4g박 x%g" % (b, n) for b, n in hold_marks[:4]],
+                     " ..." if len(hold_marks) > 4 else ""))
+    # 온셋 박 -> 홀드가 차지하는 박(2n). 걸음 채움·간격 검사가 이걸 뺀다.
+    hold_span = {round(b * GRID): HOLD_ORBIT_BEATS * n for b, n in hold_marks}
+
     # ── 밀도 보강: 공백을 반주 온셋으로 채운다 (걸음 타일보다 먼저) ──
     # 여기서 채워진 자리는 전부 '실제로 소리가 나는' 자리다.
     # 아래 2박 걸음 채움은 이제 진짜 무음 구간에만 남는다.
@@ -722,7 +797,8 @@ def main():
         print("  밀도 보강 (공백 > %g박 을 반주로 채운다, 최소 간격 %.0fms):"
               % (args.fill_above_beats, args.min_gap_ms))
         onsets = enrich_onsets(onsets, support_layers(tracks, mel_i), tmap,
-                               args.fill_above_beats, args.min_gap_ms)
+                               args.fill_above_beats, args.min_gap_ms,
+                               holds=hold_marks)
         print("    타일 %d개 -> %d개 (초당 %.2f -> %.2f탭)"
               % (mel_only, len(onsets),
                  mel_only / tmap.sec_at(onsets[-1]),
@@ -734,8 +810,10 @@ def main():
     # 정리 단계가 지워버릴 수 있고, 그러면 아래 '속도 변경은 타일 위에'
     # 불변식이 깨진다. 템포 맵의 모든 변경점을 칸으로 넘긴다.
     if args.floor_ms > 0:
+        # 홀드가 걸린 온셋도 보호한다 — 지워지면 hold_marks 가 허공을 가리킨다.
         onsets = drop_unhittable(
-            onsets, set(round(q12(b) * GRID) for b, _ in tempos),
+            onsets, set(round(q12(b) * GRID) for b, _ in tempos)
+            | set(round(b * GRID) for b, _ in hold_marks),
             tmap, args.floor_ms)
 
     # ── 2박 초과 공백 채움 (진짜 무음 구간에만 남는다) ──────────
@@ -750,12 +828,14 @@ def main():
     filled = []
     out = [onsets[0]]
     for o in onsets[1:]:
-        cells = int(round((o - out[-1]) * GRID))
+        # 홀드 타일이면 공백은 '뗌'(온셋 + 2n박)부터 시작한다 —
+        # 홀드가 차지한 시간에 걸음 타일이 들어가면 잡은 손으로 밟으라는 뜻이 된다.
+        a = out[-1] + hold_span.get(round(out[-1] * GRID), 0.0)
+        cells = int(round((o - a) * GRID))
         if cells > MAX_CELLS:
             if args.no_fill:
                 raise SystemExit("공백 %.4g박 @ %.4g박 — 한 타일 최대 2박 (--no-fill)"
-                                 % (o - out[-1], out[-1]))
-            a = out[-1]
+                                 % (o - a, a))
             n = -(-cells // MAX_CELLS)     # 조각 수 (올림)
             for k in range(1, n):
                 t = q12(a + round(cells * k / n) / GRID)
@@ -767,7 +847,10 @@ def main():
         print("  채움 타일 %d개 (2박 초과 공백%s — 지속음/반주 위를 밟는다)"
               % (len(filled), " · 인트로 포함" if intro_fills else ""))
 
-    gaps = [onsets[i] - onsets[i - 1] for i in range(1, len(onsets))]
+    # 간격 불변식은 '이동' 기준이다 — 홀드가 차지한 2n박은 홉이 아니다.
+    gaps = [onsets[i] - onsets[i - 1]
+            - hold_span.get(round(onsets[i - 1] * GRID), 0.0)
+            for i in range(1, len(onsets))]
     assert all(0 < g <= MAX_HOP + 1e-9 for g in gaps), \
         "간격 위반: %s" % [g for g in gaps if not (0 < g <= MAX_HOP + 1e-9)]
     assert all(abs(g * GRID - round(g * GRID)) < 1e-6 for g in gaps), "격자 위반"
@@ -883,6 +966,8 @@ def main():
         # 마커를 '표시할' 변경(정리 맵의 의도된 것). 원곡 모드에선
         # speed_marks_beats(홉 단위 보정)와 다르다 — Chart.speed_display 로 간다.
         "speed_display_beats": [b for b, _ in display_marks],
+        # 홀드: [온셋 박, 바퀴]. 채보 쪽 홉은 이 2n박만큼 짧아진다.
+        "hold_marks_beats": hold_marks,
     }
     meta.update(audio_meta)
     meta_path = os.path.join(HERE, "assets", "%s.json" % name)

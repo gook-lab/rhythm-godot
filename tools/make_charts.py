@@ -531,7 +531,17 @@ def chart_from_song(meta_path, name, title, audio_res, speed_marks=None):
     # 흘린다. 사소해 보이지만 느린 곡(65.7bpm)의 1/12박 스트림 238개에서
     # 0.06ms 로 누적돼 0.01ms 검증 게이트를 넘었다. k/12 의 가장 가까운
     # 배정밀도 값을 쓰면 hops_of 가 각도(15k도)에서 되계산하는 값과 비트까지 같다.
-    gaps = [round((onsets[i] - onsets[i - 1]) * 12.0) / 12.0
+    # 홀드: 온셋 인덱스 -> 바퀴 수. 홀드는 히트타임을 뒤로 미는 유일한 타일이라
+    # (한 바퀴 = 2박, ChartRuntime 이 홉에 더한다) 다음 온셋까지의 간격에서
+    # 2n박을 가져간다 — 경로 홉은 그만큼 짧아지고 온셋의 절대 시각은 그대로다.
+    hold_orb = {}
+    for hb, hn in (meta.get("hold_marks_beats") or []):
+        idx = next((k for k, o in enumerate(onsets) if abs(o - hb) <= 1e-6), None)
+        if idx is not None and idx < len(onsets) - 1:
+            hold_orb[idx] = float(hn)
+
+    gaps = [round((onsets[i] - onsets[i - 1] - 2.0 * hold_orb.get(i - 1, 0.0))
+                  * 12.0) / 12.0
             for i in range(1, len(onsets))]
     hops, twirls, ghosts, mids, ang, old_to_new = plan_path(gaps)
     _, worst = verify(ang, hops, twirls, mids)
@@ -590,14 +600,23 @@ def chart_from_song(meta_path, name, title, audio_res, speed_marks=None):
     # plan_path 의 hops 는 '타일 1 로 가는 첫 홉(항상 1박)'이 빠져 있다.
     # verify() 가 want = [1.0] + hops 로 비교하는 것과 같은 규약이다.
     full_hops = [1.0] + list(hops)
+    # 홀드를 새 타일 번호로 사상한다. 온셋 idx 의 타일은 old idx+1 이다.
+    holds_new = [(old_to_new[idx + 1], n) for idx, n in sorted(hold_orb.items())]
+    hold_new = dict(holds_new)
     checkpoints = []
     t_ms, next_cp = 0.0, CHECKPOINT_SEC * 1000.0
     mult = dict(speed_changes)
     cur_mult = 1.0
     for i in range(1, len(ang)):
         cur_mult = mult.get(i - 1, cur_mult)
-        t_ms += full_hops[i - 1] * spb_ms / cur_mult
-        if t_ms >= next_cp and i not in ghost_set and i < len(ang) - 1:
+        # 홀드박(2n)도 벽시계를 차지한다 — 안 세면 홀드 많은 곡의 체크포인트가
+        # 30초 간격보다 촘촘해진다.
+        t_ms += (full_hops[i - 1] + 2.0 * hold_new.get(i - 1, 0.0)) \
+            * spb_ms / cur_mult
+        # 홀드 타일에서의 부활은 '깨자마자 잡고 버티기'라 손이 준비가 안 된다 —
+        # 체크포인트 후보에서 뺀다(다음 타일로 밀릴 뿐이다).
+        if t_ms >= next_cp and i not in ghost_set and i not in hold_new \
+                and i < len(ang) - 1:
             checkpoints.append(i)
             next_cp = t_ms + CHECKPOINT_SEC * 1000.0
 
@@ -612,11 +631,14 @@ def chart_from_song(meta_path, name, title, audio_res, speed_marks=None):
     AUDIO = audio_res
     try:
         _emit_tres(name, title, bpm, ang, hops, twirls, ghosts, mids, checkpoints,
-                   so_ms, speed_changes, worst, display_tiles)
+                   so_ms, speed_changes, worst, display_tiles, holds_new)
     finally:
         AUDIO = prev_audio
     print("%-20s 첫 온셋 %g박 -> 타일0 @ %.3fs · 심판 타일 %d · 겹침 %d쌍"
           % ("", onsets[0], so_ms / 1000.0, len(want), overlap_pairs(ang)))
+    if holds_new:
+        print("%-20s 홀드 타일: %s" % ("", " ".join(
+            "타일%d x%g바퀴" % (t, n) for t, n in holds_new)))
     if speed_changes:
         print("%-20s 속도 타일: %s" % ("", " ".join(
             "%s타일%d x%g" % ("토끼" if m > 1 else "달팽이", i, m)
