@@ -73,22 +73,48 @@ def q12(beat):
 # 안 들린다"의 원인이었다 (synth.py 머리말에 왜인지 적어 뒀다).
 
 
-def track_role(label, is_melody):
-    """스템 파일명 -> (역할, 진폭).
+## 스템 이름 -> (역할, 진폭).
+##
+## 여기서 한 번 크게 틀렸다(2026-08-10). 처음엔 '채보가 따라가는 성부'에게
+## 가장 큰 소리를 줬는데, 그 둘은 같은 게 아니다:
+##
+##   채보 멜로디는 '칠 만한' 성부다 — 너무 촘촘하면 못 치므로 탈락한다.
+##   곡의 주인공은 '들리는' 성부다 — 촘촘할수록 주인공인 경우가 많다.
+##
+## 실측 mureka_01: 채보는 베이스(노트 268개)를 따라가는데 곡을 이끄는 건
+## synth lead(노트 2,487개)다. 그런데 리드가 pad 로 분류돼 amp 0.14 —
+## 전체에서 제일 조용한 값이었다. 곡의 주인공이 배경으로 깔린 것이다.
+## mureka_03(1,638) · mureka_07(1,335) 도 같았다. "노래가 잘 안 들린다"의 정체.
+##
+## 그래서 진폭은 **악기 이름**에서 정하고, 채보 멜로디에는 배수만 얹는다 —
+## 플레이어가 자기가 치는 성부를 귀로 따라갈 수 있어야 하니까.
+## 라벨은 "파일명:트랙명" 이라 둘 다에서 악기를 찾는다(vocal:Singing Voice 등).
+MELODY_BOOST = 1.35   # 채보가 따라가는 성부에 얹는 배수
+AMP_CEIL = 0.34       # 한 성부가 믹스를 독식하지 않게
 
-    역할이 파형·하모닉 상한·ADSR 을 통째로 정한다(synth.ROLES).
-    진폭은 믹스 균형만 잡는다 — 리드가 반주에 묻히면 채보를 귀로 못 따라간다.
-    """
+
+def track_role(label, is_melody):
     l = label.lower()
-    if is_melody:
-        return ("lead", 0.26)
     if "bass" in l:
-        return ("bass", 0.30)
-    if "guitar" in l:
-        return ("pluck", 0.15)
-    if "piano" in l:
-        return ("pluck", 0.17)
-    return ("pad", 0.14)
+        role, amp = "bass", 0.30
+    elif "guitar" in l:
+        role, amp = "pluck", 0.17
+    elif "piano" in l or "keys" in l:
+        role, amp = "pluck", 0.18
+    elif "lead" in l or "synth" in l:
+        # 전사 스템에서 곡을 이끄는 경우가 가장 많은 자리다.
+        role, amp = "lead", 0.23
+    elif "vocal" in l or "voice" in l or "sing" in l:
+        role, amp = "lead", 0.21
+    elif "brass" in l or "wind" in l or "sax" in l or "horn" in l:
+        role, amp = "lead", 0.21
+    elif "string" in l or "pad" in l or "pipe" in l or "organ" in l:
+        role, amp = "pad", 0.16
+    else:
+        role, amp = "pad", 0.16
+    if is_melody:
+        amp *= MELODY_BOOST
+    return role, min(amp, AMP_CEIL)
 
 
 # ---------------------------------------------------------------- 모델
@@ -210,6 +236,119 @@ def place_holds(onsets, mel_notes, tmap, min_gap_ms):
     return holds
 
 
+## ── 곡의 세기 곡선 ──────────────────────────────────────────────
+## 밀도 보강을 곡 전체에 똑같이 걸면 채보가 평평해진다. 실측(2026-08-10):
+## 10초 구간별 탭/초가 mureka_01 3.1±0.6 으로 서막도 클라이맥스도 없었다.
+##
+## 그런데 곡에는 기승전결이 있다 — 같은 곡의 세기 곡선이
+## `▃▄▅▃█▆▅▅▇▆▆▃▃▃▃` 였다. 채보가 그걸 뭉갠 것이다:
+## 조용한 구간은 반주로 억지로 채워 올리고, 시끄러운 구간은 이미 꽉 차서 더 못 올린다.
+##
+## 그래서 '얼마나 채울지'를 곡의 세기에 맞춘다. 난이도를 지어내지 않고
+## 음악이 이미 가진 모양을 드러내는 쪽이다 — 세기가 평평한 곡은 평평하게 남는다.
+INTENSITY_WINDOW = 8.0   # 초. 마디 두어 개 — 이보다 짧으면 프레이즈 단위로 요동친다
+INTENSITY_SMOOTH = 2     # 이웃 창 몇 개까지 평활할지
+
+
+def intensity_curve(tracks, tmap, dur):
+    """0..1 세기. 온셋 밀도 0.6 + 동시에 울리는 트랙 수 0.4.
+
+    둘을 섞는 이유: 온셋 밀도만 보면 드럼 롤 하나에 값이 튀고, 트랙 수만 보면
+    다 같이 길게 끄는 패드 구간이 클라이맥스로 잡힌다.
+    """
+    k = max(1, int(dur / INTENSITY_WINDOW) + 1)
+    ons = [0.0] * k
+    act = [[0] * k for _ in tracks]
+    for ti, tr in enumerate(tracks):
+        for b, _d, _p, _v in tr["notes"]:
+            t = tmap.sec_at(b)
+            if t < 0 or t >= dur:
+                continue
+            j = min(int(t / INTENSITY_WINDOW), k - 1)
+            ons[j] += 1
+            act[ti][j] = 1
+    top = max(ons) or 1.0
+    ntr = max(len(tracks), 1)
+    raw = [0.6 * (ons[j] / top) + 0.4 * (sum(a[j] for a in act) / ntr)
+           for j in range(k)]
+    # 평활. 안 하면 창 경계에서 난이도가 계단으로 튄다.
+    out = []
+    for j in range(k):
+        lo = max(0, j - INTENSITY_SMOOTH)
+        hi = min(k, j + INTENSITY_SMOOTH + 1)
+        out.append(sum(raw[lo:hi]) / (hi - lo))
+    span = max(out) - min(out)
+    if span < 1e-6:
+        return [0.5] * k          # 정말 평평한 곡은 중간 난이도로
+
+    # 순위(백분위)로 편다. 최소-최대로 펴면 세기 분포가 한쪽에 쏠린 곡에서
+    # 대부분의 구간이 0 근처에 몰려 곡 전체가 서막처럼 쉬워진다 —
+    # 실측 mureka_14 가 그랬다(평균 3.55 -> 2.44탭/초).
+    # 순위로 펴면 어떤 곡이든 자기 안에서 가장 조용한 구간이 서막,
+    # 가장 북적이는 구간이 클라이맥스가 된다. '이 곡 안에서의 상대적 세기'가
+    # 우리가 원하는 것이지 절대값이 아니다.
+    order = sorted(range(k), key=lambda j: out[j])
+    rank = [0.0] * k
+    for pos, j in enumerate(order):
+        rank[j] = pos / max(k - 1, 1)
+    # 절반은 실제 세기, 절반은 순위. 진짜로 평평한 곡을 가짜 기승전결로
+    # 만들지 않으면서도 범위는 다 쓴다.
+    lo = min(out)
+    norm = [(v - lo) / span for v in out]
+    return [0.5 * norm[j] + 0.5 * rank[j] for j in range(k)]
+
+
+## 세기 -> 그 구간의 채움 천장(박). 세기가 낮으면 거의 안 채우고(멜로디만),
+## 높으면 반주 온셋을 촘촘히 얹는다. 낮은 쪽이 '서막', 높은 쪽이 '클라이맥스'다.
+## 구간별 '목표 탭 간격'(ms). 세기 0 이면 EASY, 1 이면 HARD.
+##
+## 왜 박이 아니라 ms 인가: 심심함은 음악적 개념이라 박이 맞지만(공백을 채울지
+## 말지), **난이도는 물리적 개념이라 ms 다** — 손과 판정창은 BPM 을 모른다.
+## 박으로 잡았더니 65bpm 곡과 175bpm 곡의 체감 난이도가 세 배 벌어졌다.
+##
+## 300ms = 3.3탭/초(서막) · 150ms = 6.7탭/초(클라이맥스).
+## 서막을 더 성기게 하면(400ms) 세기 분포가 낮게 쏠린 곡이 통째로 쉬워진다 —
+## 실측 mureka_14 가 평균 3.55 -> 2.44탭/초로 떨어졌다.
+CEIL_EASY_MS = 300.0
+CEIL_HARD_MS = 150.0
+
+## 최소 간격도 세기를 따른다. 서막에서는 넉넉하게, 클라이맥스에서는 조인다 —
+## '어렵다'는 건 결국 손이 바빠지는 것이고, 그건 간격이 정한다.
+## 115ms 는 판정창이 ±52ms 로 눌리는 지점이다(Judge.set_gaps).
+## 실측 사람 산포가 20~30ms 라 아직 여유가 있고, 이 값은 이미 여러 곡에
+## 자연히 존재하던 최소 간격이기도 하다.
+GAP_HARD_MS = 115.0
+
+
+def _at_curve(curve, tmap, beat):
+    t = tmap.sec_at(beat)
+    j = min(max(int(t / INTENSITY_WINDOW), 0), len(curve) - 1)
+    return curve[j]
+
+
+def ceiling_fn(curve, tmap, base_beats):
+    """(박 -> 그 자리의 목표 탭 간격 ms).
+
+    '채울지 말지'가 아니라 '얼마나 촘촘히'를 정한다. 이걸 게이트로만 쓰면
+    멜로디가 쉬는 구간은 공백이 몇 초씩이라 어떤 천장이든 넘어서 바닥까지
+    꽉 채워지고, 결과가 뒤집혀 '조용한 구간이 최대 밀도'가 된다(실측).
+
+    base_beats(--fill-above-beats)는 서막 쪽 상한으로만 남는다 — 크게 주면
+    서막이 더 성겨지고, 작게 주면 곡 전체가 촘촘해진다.
+    """
+    # base_beats(--fill-above-beats)는 서막 쪽 '배수'다. 기본 1.0 이면 CEIL_EASY_MS.
+    # max() 로 두면 안 된다 — 기본값 1.0 에서 max(300, 400)=400 이 되어
+    # CEIL_EASY_MS 를 내려도 아무 일도 안 일어난다(실제로 그랬다).
+    easy = max(CEIL_EASY_MS * base_beats, CEIL_HARD_MS)
+    return lambda b: easy + (CEIL_HARD_MS - easy) * _at_curve(curve, tmap, b)
+
+
+def gap_fn(curve, tmap, base_ms):
+    """(박 -> 그 자리의 최소 간격 ms). 서막은 넉넉, 클라이맥스는 조인다."""
+    hard = min(GAP_HARD_MS, base_ms)
+    return lambda b: base_ms + (hard - base_ms) * _at_curve(curve, tmap, b)
+
+
 def support_layers(tracks, mel_i):
     """멜로디 외 트랙 -> 우선순위대로 정렬된 채움 후보 층 [(이름, 온셋들)]."""
     back, hats, bass, other = set(), set(), set(), set()
@@ -258,15 +397,60 @@ def enrich_onsets(onsets, layers, tmap, fill_above_beats, min_gap_ms,
             a, b = cur[k], cur[k + 1]
             # 홀드 타일이면 공백은 '뗌'부터 시작한다
             a = hold_end.get(round(a * GRID), a)
-            if b - a <= fill_above_beats + 1e-9:
+            if callable(fill_above_beats):
+                # ── 목표 간격으로 '균등 분배' ──────────────────────
+                # 탐욕(앞에서부터 목표만큼 띄우며 집기)은 목표의 1.35배로
+                # 수렴한다: 400ms 공백에 목표 150 이면 150 을 하나 집고 남은
+                # 250 은 바닥(115) 때문에 더 못 쪼갠다 — 실측 목표 150ms 에
+                # 실제 201ms 였다. 공백을 n 등분하고 각 자리에 가장 가까운
+                # 온셋을 집으면 목표에 실제로 닿는다.
+                target = fill_above_beats(a)
+                gap_ms = (sec(b) - sec(a)) * 1000.0
+                n = int(round(gap_ms / target))
+                if n <= 1:
+                    continue
+                lo = bisect.bisect_right(pool, a)
+                hi = bisect.bisect_left(pool, b)
+                cands = pool[lo:hi]
+                if not cands:
+                    continue
+                floor = min_gap_ms(a) if callable(min_gap_ms) else min_gap_ms
+                last = a
+                for step in range(1, n):
+                    want = sec(a) + gap_ms * step / n / 1000.0
+                    # 이상적인 자리에 가장 가까운 후보 (양옆만 보면 된다)
+                    j = bisect.bisect_left(cands, a + (b - a) * step / n)
+                    best, bd = None, 1e9
+                    for jj in (j - 1, j, j + 1):
+                        if 0 <= jj < len(cands):
+                            dd = abs(sec(cands[jj]) - want)
+                            if dd < bd:
+                                bd, best = dd, cands[jj]
+                    # 그 자리에 음이 없으면 비워 둔다 — 없는 소리를 밟게 하지 않는다.
+                    # 허용치가 좁으면 후보가 있어도 자리가 비어 밀도가 안 오른다.
+                    # 0.5 -> 0.7 로 넓히니 클라이맥스가 목표에 가까워졌다.
+                    if best is None or bd * 1000.0 > target * 0.7:
+                        continue
+                    if (sec(best) - sec(last)) * 1000.0 < floor:
+                        continue
+                    if (sec(b) - sec(best)) * 1000.0 < floor:
+                        continue
+                    added.append(best)
+                    last = best
+                continue
+
+            # 고정 천장(테스트·수동 경로): 예전 그대로 '박' 게이트 + 탐욕.
+            ceil = fill_above_beats
+            if b - a <= ceil + 1e-9:
                 continue
             lo = bisect.bisect_right(pool, a)
             hi = bisect.bisect_left(pool, b)
             last = a
             for c in pool[lo:hi]:
-                if (sec(c) - sec(last)) * 1000.0 < min_gap_ms:
+                floor = min_gap_ms(c) if callable(min_gap_ms) else min_gap_ms
+                if (sec(c) - sec(last)) * 1000.0 < floor:
                     continue
-                if (sec(b) - sec(c)) * 1000.0 < min_gap_ms:
+                if (sec(b) - sec(c)) * 1000.0 < floor:
                     continue
                 added.append(c)
                 last = c
@@ -415,6 +599,79 @@ def pick_melody(tracks, want, tmap, dur, verbose=True):
                          "드럼 " if tracks[i]["drums"] else "", sc,
                          st["onsets"], st["span"], st["tight"], st["rate"]))
     return best[0]
+
+
+# ---------------------------------------------------------------- 토끼 구간
+## 원작의 토끼는 대부분 곡 템포가 아니라 '채보 결정'이다. 전사 템포는
+## dejitter 로 평평해져서 그대로 두면 토끼가 사실상 0개다(실측 14곡 중 13곡).
+##
+## 배속 m 은 벽시계를 보존한다: 홉 박자를 m배로 키우고 배율도 m배 —
+## 같은 시각에 같은 탭이고, 행성만 m배로 돈다(스윕도 m배라 기하가 넓어진다).
+## 그래서 조건이 전부 기하·구조에서 나온다:
+##   · 구간 안 모든 간격 <= 1박 (2배 후 <= 2박 = 한 타일 최대 스윕)
+##   · 홀드 없음 (홀드 바퀴는 고정 2박이라 배속과 셈이 꼬인다)
+##   · 세기 상위(>= 0.7)가 8초 이상 이어질 것 — 클라이맥스에만 건다
+BOOST_MULT = 2.0
+BOOST_MIN_SEC = 8.0
+BOOST_CURVE_MIN = 0.55   # 구간 '평균' 세기 문턱 (평균은 절정보다 낮게 잡는다)
+BOOST_MAX_SECTIONS = 2
+BOOST_MAX_SEC = 32.0    # 구간 상한 — 곡 절반이 토끼면 '구간'이 아니다 (mureka_06 실측 90초)
+
+
+def pick_boost_sections(onsets, holds, curve, tmap):
+    """[[시작 박, 끝 박, 배율], ...] — 깨끗한 구간을 세기로 선발, 최대 2개.
+
+    처음엔 '세기 >= 임계 창'을 먼저 찾고 그 안에서 조건을 검사했는데,
+    실측 14곡의 모든 클라이맥스에 >1박 간격과 홀드가 몇 개씩 끼어 있어
+    구간이 갈가리 찢겨 토끼가 0개였다. 순서를 뒤집는다:
+    기하적으로 깨끗한 최대 구간(간격 <= 1박 · 홀드 없음)을 전부 만들고,
+    각 구간의 세기 '평균'으로 고른다 — 구간 경계가 세기 창이 아니라
+    음악 구조(홀드·긴 쉼)에서 나오므로 안정적이다.
+    """
+    hold_cells = set(round(b * GRID) for b, _n in holds)
+    spans = []
+    s0 = 0
+    for i in range(len(onsets) - 1):
+        bad = (onsets[i + 1] - onsets[i] > MAX_HOP / BOOST_MULT + 1e-9
+               or round(onsets[i] * GRID) in hold_cells)
+        if bad:
+            if i > s0:
+                spans.append((s0, i))
+            s0 = i + 1
+    if len(onsets) - 1 > s0:
+        spans.append((s0, len(onsets) - 1))
+
+    out = []
+    for a, b in spans:
+        if b - a < 8:
+            continue
+        span_sec = tmap.sec_at(onsets[b]) - tmap.sec_at(onsets[a])
+        if span_sec < BOOST_MIN_SEC:
+            continue
+        w0 = int(tmap.sec_at(onsets[a]) / INTENSITY_WINDOW)
+        w1 = max(w0 + 1, int(tmap.sec_at(onsets[b]) / INTENSITY_WINDOW) + 1)
+        # 너무 긴 구간은 절정 창을 중심으로 상한까지 줄인다 —
+        # 곡의 절반이 토끼면 대비가 사라져 '구간'이 아니게 된다.
+        if span_sec > BOOST_MAX_SEC:
+            peak = max(range(w0, w1),
+                       key=lambda w: curve[min(w, len(curve) - 1)])
+            t_c = (peak + 0.5) * INTENSITY_WINDOW
+            lo_t, hi_t = t_c - BOOST_MAX_SEC / 2, t_c + BOOST_MAX_SEC / 2
+            aa = next((i for i in range(a, b + 1)
+                       if tmap.sec_at(onsets[i]) >= lo_t), a)
+            bb = next((i for i in range(b, a - 1, -1)
+                       if tmap.sec_at(onsets[i]) <= hi_t), b)
+            if bb - aa >= 8 and tmap.sec_at(onsets[bb]) - tmap.sec_at(onsets[aa]) >= BOOST_MIN_SEC:
+                a, b = aa, bb
+                w0 = int(tmap.sec_at(onsets[a]) / INTENSITY_WINDOW)
+                w1 = max(w0 + 1, int(tmap.sec_at(onsets[b]) / INTENSITY_WINDOW) + 1)
+        vals = [curve[min(w, len(curve) - 1)] for w in range(w0, w1)]
+        score = sum(vals) / len(vals)
+        if score < BOOST_CURVE_MIN:
+            continue
+        out.append((score, [onsets[a], onsets[b], BOOST_MULT]))
+    out.sort(key=lambda x: -x[0])
+    return [sec for _s, sec in out[:BOOST_MAX_SECTIONS]]
 
 
 # ---------------------------------------------------------------- 검증
@@ -647,10 +904,13 @@ def main():
                          "(midilib.resample_tempos_at_tiles), 킥·스네어 상호상관으로 "
                          "자동 정렬 후 산포 게이트(σ%.0fms·범위%.0fms)를 통과해야 한다"
                          % (ALIGN_SD_GATE_MS, ALIGN_RANGE_GATE_MS))
-    ap.add_argument("--holds", action="store_true",
-                    help="멜로디 지속음 위에 홀드 타일 자동 배치 (한 바퀴=2박, "
-                         "다음 온셋까지의 간격에서 가져간다 — 온셋 절대 시각 불변). "
-                         "실곡 검증이 쌓이면 기본값을 뒤집는다")
+    # 기본값을 뒤집었다(2026-08-10). 옵트인으로 두면 '--holds 없이 재생성'
+    # 한 번에 홀드가 조용히 사라진다 — 실제로 그럴 뻔했다.
+    # 실곡 검증 근거: 14곡 116개 배치 · 엔진 교차검증 최대 0.0096ms ·
+    # 자동플레이 랭크 P 100%(판정 505 = 입력 481 + 뗌 24).
+    ap.add_argument("--no-holds", dest="holds", action="store_false",
+                    help="홀드 자동 배치를 끈다 (기본은 켬)")
+    ap.set_defaults(holds=True)
     ap.add_argument("--force-synth", action="store_true",
                     help="원곡 오디오 채보를 알고도 신스 렌더로 되돌린다 "
                          "(--audio 없는 재생성이 원곡 채보를 만나면 기본은 중단)")
@@ -710,7 +970,26 @@ def main():
         print("  코드 합침: 노트 %d -> 온셋 %d" % (raw_n, len(onsets)))
 
     # ── 카운트인 시프트 (오디오·템포·온셋을 전부 같이 민다) ─────
-    shift = max(0.0, LEAD_BEATS - onsets[0])
+    # ── 카운트인은 '박'이 아니라 '벽시계'로 잰다 ─────────────────
+    # 4박 고정이었더니 203bpm(mureka_09)에선 1.2초라 손 올릴 새가 없고
+    # 66bpm 에선 3.6초 침묵이라 "곡이 안 나온다"로 읽혔다.
+    # 목표 ~2.5초에 가장 가까운 정수 박(2~8) — 음악적으론 박, 체감으론 시간.
+    # 한 지점 bpm 으로 박수를 정하면 안 된다 — 전사 인트로가 300bpm 으로 찍힌
+    # 곡(mureka_06)에서 '68bpm 기준 3박'을 골랐더니 실제 여유가 0.9초였다.
+    # 첫 온셋에서 n박 거슬러 간 벽시계를 템포맵으로 직접 적분해 고른다.
+    _tm0 = TempoMap(tempos_clean)
+
+    def _lead_wall(nb):
+        b1 = onsets[0]
+        b0 = b1 - nb
+        if b0 >= 0.0:
+            return _tm0.sec_at(b1) - _tm0.sec_at(b0)
+        return _tm0.sec_at(b1) + (-b0) * 60.0 / tempos_clean[0][1]
+
+    lead_beats = float(min(range(2, 13), key=lambda nb: abs(_lead_wall(nb) - 2.5)))
+    print("  카운트인 %g박 = %.0fms (템포맵 적분)"
+          % (lead_beats, _lead_wall(lead_beats) * 1000.0))
+    shift = max(0.0, lead_beats - onsets[0])
     # 템포 변경 지점도 1/12 격자 위로 스냅한다. 노트에 한 것과 같은 이유이자
     # 같은 원칙이다 — 게임은 속도를 '타일 단위'로만 바꿀 수 있고 타일은 격자
     # 위에만 놓이므로, 격자 밖 변경점은 채보로 표현할 방법이 아예 없다.
@@ -739,9 +1018,9 @@ def main():
     # 인트로를 만들지 않는다 — 첫 멜로디까지 2박 걸음 채움 타일이 아래
     # 공백 채움 루프에서 자동으로 놓인다.
     intro_fills = 0
-    if onsets[0] > LEAD_BEATS + 1e-9:
+    if onsets[0] > lead_beats + 1e-9:
         intro_fills = 1  # 실제 개수는 공백 채움 루프가 센다 — 시드만 기록
-        onsets.insert(0, LEAD_BEATS)
+        onsets.insert(0, lead_beats)
 
     base_bpm = dominant_bpm(tempos, onsets[0], onsets[-1])
 
@@ -759,6 +1038,20 @@ def main():
     # 방금 넣은 타일로 바뀌어, 그 뒤의 변경점이 전부 `qb < onsets[-1]` 에서
     # 탈락한다 — 실측(Mureka 7번) 16개 변경점 중 1개만 삽입되고 14개가 조용히
     # 누락돼 그 타일들의 홉이 통째로 어긋났다(최대 15.1ms).
+    # ── 곡 꼬리 앵커 ────────────────────────────────────────────
+    # 온셋 목록이 멜로디의 마지막 음에서 끝나면, 반주가 계속되는 꼬리가
+    # 채보 밖에 남는다 — 실측 최대 11.4초. 그럼 '완주'가 곡 중간에 뜬다.
+    # 전 트랙의 마지막 노트 시작을 앵커로 넣어 보강·걸음이 꼬리까지 채운다.
+    # 앵커 자체도 실제 노트라 정당한 탭이다.
+    # 속도 타일 삽입 '앞'이어야 한다 — 삽입 범위가 [첫, 끝] 온셋이라
+    # 앵커가 뒤에 오면 꼬리의 템포 변경점이 타일을 못 받고
+    # '속도 변경은 타일 위' 불변식 검사에서 죽는다(실측 mureka_07 433박).
+    last_note = q12(max(n[0] for tr in tracks for n in tr["notes"]))
+    if last_note > onsets[-1] + 1e-9:
+        print("  꼬리 앵커 %.4g박 — 마지막 탭 뒤 %.1f초의 반주가 채보 밖이었다"
+              % (last_note, tmap.sec_at(last_note) - tmap.sec_at(onsets[-1])))
+        onsets.append(last_note)
+
     lo, hi = onsets[0], onsets[-1]
     have = set(round(o * GRID) for o in onsets)   # 격자 칸 번호로 비교한다
     inserted = []
@@ -775,7 +1068,11 @@ def main():
               % (len(inserted), ["%.4g박" % b for b in inserted[:6]],
                  " ..." if len(inserted) > 6 else ""))
 
+    # 세기 곡선 — 밀도 보강과 토끼 구간이 같이 쓴다.
+    curve = intensity_curve(tracks, tmap, tmap.sec_at(onsets[-1]))
+
     # ── 홀드 자동 배치 (보강·걸음보다 먼저 — 홀드 구간엔 아무것도 못 들어간다) ──
+    # 기본 켬. 지속음이 없는 곡은 자연히 0개가 된다(mureka_06: 1/12박 스트림).
     hold_marks = []
     if args.holds:
         hold_marks = place_holds(onsets, tracks[mel_i]["notes"], tmap,
@@ -794,10 +1091,21 @@ def main():
     # 아래 2박 걸음 채움은 이제 진짜 무음 구간에만 남는다.
     mel_only = len(onsets)
     if args.fill_above_beats > 0:
-        print("  밀도 보강 (공백 > %g박 을 반주로 채운다, 최소 간격 %.0fms):"
-              % (args.fill_above_beats, args.min_gap_ms))
+        # 곡의 세기를 따라 '얼마나 채울지'를 구간마다 바꾼다.
+        # 이걸 안 하면 조용한 구간은 억지로 채워 올라가고 시끄러운 구간은
+        # 이미 꽉 차서 더 못 올라가, 곡의 기승전결이 채보에서 사라진다.
+        ceil = ceiling_fn(curve, tmap, args.fill_above_beats)
+        spark = "".join(" ▁▂▃▄▅▆▇█"[min(8, int(v * 8))] for v in curve)
+        print("  밀도 보강 (세기 따라 목표 간격 %.0f->%.0fms = %.1f->%.1f탭/초"
+              " · 바닥 %.0f~%.0fms)"
+              % (max(CEIL_EASY_MS * args.fill_above_beats, CEIL_HARD_MS),
+                 CEIL_HARD_MS,
+                 1000.0 / max(CEIL_EASY_MS * args.fill_above_beats, CEIL_HARD_MS),
+                 1000.0 / CEIL_HARD_MS,
+                 args.min_gap_ms, min(GAP_HARD_MS, args.min_gap_ms)))
+        print("    세기 %s" % spark)
         onsets = enrich_onsets(onsets, support_layers(tracks, mel_i), tmap,
-                               args.fill_above_beats, args.min_gap_ms,
+                               ceil, gap_fn(curve, tmap, args.min_gap_ms),
                                holds=hold_marks)
         print("    타일 %d개 -> %d개 (초당 %.2f -> %.2f탭)"
               % (mel_only, len(onsets),
@@ -846,6 +1154,20 @@ def main():
     if filled:
         print("  채움 타일 %d개 (2박 초과 공백%s — 지속음/반주 위를 밟는다)"
               % (len(filled), " · 인트로 포함" if intro_fills else ""))
+
+    # ── 토끼 구간 (게임플레이 배속) ─────────────────────────────
+    # 원곡 오디오 모드는 제외 — 홉 단위 템포 리샘플과 배속 합성이 얽힌다.
+    boosts = []
+    if not args.audio:
+        boosts = pick_boost_sections(onsets, hold_marks, curve, tmap)
+        if os.environ.get("DEBUG_BOOST"):
+            print("    [debug] curve>=%.2f 창 %d/%d · 최고 %.2f"
+                  % (BOOST_CURVE_MIN,
+                     sum(1 for v in curve if v >= BOOST_CURVE_MIN), len(curve),
+                     max(curve)))
+        for _b0, _b1, _m in boosts:
+            print("  토끼 구간 x%g: %.4g~%.4g박 (%.0f~%.0f초 · 세기 상위)"
+                  % (_m, _b0, _b1, tmap.sec_at(_b0), tmap.sec_at(_b1)))
 
     # 간격 불변식은 '이동' 기준이다 — 홀드가 차지한 2n박은 홉이 아니다.
     gaps = [onsets[i] - onsets[i - 1]
@@ -945,6 +1267,27 @@ def main():
         print("  원곡 채택: %s -> assets/%s.wav (스테레오 · 신스 렌더 대체)"
               % (os.path.basename(args.audio), name))
 
+    # ── 카운트인 틱 ────────────────────────────────────────────
+    # 침묵 카운트인은 "곡이 안 나온다"로 읽힌다. 마지막 한 마디(최대 4박)에
+    # 틱을 박는다 — 마지막 틱만 한 옥타브 위라 출발이 귀로 잡힌다.
+    # 원곡 모드에도 박는다: 정렬이 카운트인만큼 무음을 앞에 붙여 놓았다.
+    ch = audio_meta.get("audio_channels", 1)
+    ticks = int(min(4, math.floor(onsets[0] + 1e-9)))
+    for kt in range(ticks):
+        t0 = tmap.sec_at(onsets[0] - ticks + kt)
+        f = 1760.0 if kt == ticks - 1 else 880.0
+        start = int(t0 * SR)
+        for i2 in range(int(0.05 * SR)):
+            v = math.sin(2.0 * math.pi * f * i2 / SR) \
+                * math.exp(-i2 / SR * 60.0) * 0.5
+            for c2 in range(ch):
+                j2 = (start + i2) * ch + c2
+                if 0 <= j2 < len(buf):
+                    buf[j2] = max(-1.0, min(1.0, buf[j2] + v))
+    if ticks:
+        write_wav(os.path.join(HERE, "assets", "%s.wav" % name), buf, ch)
+        print("  카운트인 틱 %d개 (마지막 틱은 한 옥타브 위)" % ticks)
+
     meta = {
         "bpm": base_bpm,
         "sample_rate": SR,
@@ -965,7 +1308,11 @@ def main():
         "taps_per_sec": len(onsets) / span_s,
         # 마커를 '표시할' 변경(정리 맵의 의도된 것). 원곡 모드에선
         # speed_marks_beats(홉 단위 보정)와 다르다 — Chart.speed_display 로 간다.
-        "speed_display_beats": [b for b, _ in display_marks],
+        "speed_display_beats": [b for b, _ in display_marks]
+            + [b for sec in boosts for b in (sec[0], sec[1])],
+        # 게임플레이 배속 구간(토끼). chart_from_song 이 홉 박자 x m ·
+        # 배율 x m 으로 적용한다 — 벽시계는 불변이다.
+        "boost_sections_beats": boosts,
         # 홀드: [온셋 박, 바퀴]. 채보 쪽 홉은 이 2n박만큼 짧아진다.
         "hold_marks_beats": hold_marks,
     }

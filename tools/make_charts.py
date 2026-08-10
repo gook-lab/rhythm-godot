@@ -543,6 +543,40 @@ def chart_from_song(meta_path, name, title, audio_res, speed_marks=None):
     gaps = [round((onsets[i] - onsets[i - 1] - 2.0 * hold_orb.get(i - 1, 0.0))
                   * 12.0) / 12.0
             for i in range(1, len(onsets))]
+
+    # ── 토끼 구간 적용: 홉 박자 x m · 배율 x m — 벽시계 불변 ─────
+    # wall = beats*spb/mult 이므로 둘을 같이 곱하면 히트타임이 그대로다.
+    # 검증 게이트(replay vs expected < 0.01ms)가 이 항등식을 파일 단위로 잠근다.
+    boosts = meta.get("boost_sections_beats") or []
+    if boosts:
+        for b0, b1, m in boosts:
+            for i in range(len(gaps)):
+                if onsets[i] >= b0 - 1e-9 and onsets[i + 1] <= b1 + 1e-9:
+                    gaps[i] = round(gaps[i] * m * 12.0) / 12.0
+        sm = sorted([list(x) for x in speed_marks])
+
+        def _tempo_mult(b):
+            v = 1.0
+            for bb, mm in sm:
+                if bb <= b + 1e-9:
+                    v = mm
+            return v
+
+        marks = []
+        for bb, mm in sm:
+            k = 1.0
+            for b0, b1, m in boosts:
+                if b0 - 1e-9 <= bb < b1 - 1e-9:
+                    k = m
+            marks.append([bb, mm * k])
+        for b0, b1, m in boosts:
+            marks.append([b0, _tempo_mult(b0) * m])
+            marks.append([b1, _tempo_mult(b1)])
+        dd = {}
+        for bb, mm in sorted(marks):
+            dd[round(bb * 12.0)] = [bb, mm]   # 같은 박은 마지막 승
+        speed_marks = [dd[kk] for kk in sorted(dd)]
+
     hops, twirls, ghosts, mids, ang, old_to_new = plan_path(gaps)
     _, worst = verify(ang, hops, twirls, mids)
 

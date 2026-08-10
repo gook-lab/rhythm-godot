@@ -176,7 +176,10 @@ def noise():
     return (_noise_state / 0x3FFFFFFF) - 1.0
 
 
-def kick(buf, t0, amp=0.72):
+## 드럼 레벨. 처음엔 더 컸는데, 노트 수가 압도적이라(실측 mureka_03: 드럼 1150
+## vs 베이스 126) 믹스 에너지의 55~74%를 드럼이 먹고 멜로디가 묻혔다.
+## 리듬게임이라 박은 들려야 하지만, 자기가 치는 성부를 못 들으면 채보를 못 따라간다.
+def kick(buf, t0, amp=0.54):
     """피치 스윕 + 클릭. 클릭이 있어야 작은 스피커에서도 박자가 들린다."""
     start = int(t0 * SR)
     n = int(0.18 * SR)
@@ -224,7 +227,7 @@ def _band_noise(a_lo, a_hi, state):
     return state[2] - state[3]
 
 
-def snare(buf, t0, amp=0.6):
+def snare(buf, t0, amp=0.45):
     """대역 정형 노이즈 + 두 음의 몸통. 단일 사인은 '뿅'이라 스네어가 안 된다."""
     start = int(t0 * SR)
     n = int(0.16 * SR)
@@ -242,7 +245,7 @@ def snare(buf, t0, amp=0.6):
                    + body * 0.35) * e * amp
 
 
-def hat(buf, t0, amp=0.13, open_=False):
+def hat(buf, t0, amp=0.10, open_=False):
     start = int(t0 * SR)
     n = int((0.12 if open_ else 0.035) * SR)
     d = 22.0 if open_ else 95.0
@@ -259,13 +262,13 @@ def hat(buf, t0, amp=0.13, open_=False):
 def drum(buf, t0, pitch, vel):
     a = vel / 100.0
     if pitch in (35, 36):
-        kick(buf, t0, 0.72 * a)
+        kick(buf, t0, 0.54 * a)
     elif pitch in (38, 40):
-        snare(buf, t0, 0.55 * a)
+        snare(buf, t0, 0.45 * a)
     elif pitch in (46, 44):
-        hat(buf, t0, 0.13 * a, open_=True)
+        hat(buf, t0, 0.10 * a, open_=True)
     else:
-        hat(buf, t0, 0.13 * a)
+        hat(buf, t0, 0.10 * a)
 
 
 # ─────────────────────────────────────────────────── 공간감
