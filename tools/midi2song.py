@@ -383,6 +383,8 @@ def replay_hit_times_from_tres(tres_path):
     twirls = [int(x) for x in m.group(1).split(",")] if m else []
     m = re.search(r"ghost_tiles = PackedInt32Array\(([^)]*)\)", t)
     ghosts = set(int(x) for x in m.group(1).split(",")) if m else set()
+    m = re.search(r"midspin_tiles = PackedInt32Array\(([^)]*)\)", t)
+    mids = [int(x) for x in m.group(1).split(",")] if m else []
     m = re.search(r"speed_changes = PackedVector2Array\(([^)]*)\)", t)
     sc = []
     if m:
@@ -396,7 +398,7 @@ def replay_hit_times_from_tres(tres_path):
                 v = y
         return v
 
-    hops = make_charts.hops_of(ang, twirls)
+    hops = make_charts.hops_of(ang, twirls, mids)
     out = [so]
     spb = 60000.0 / bpm
     for i in range(1, len(ang)):
@@ -419,19 +421,19 @@ ALIGN_SD_GATE_MS = 8.0
 ALIGN_RANGE_GATE_MS = 25.0
 
 
-def _decode_audio_mono48k(path):
-    """원곡(mp3 등) -> 48kHz 모노 float 리스트. macOS afconvert 를 쓴다."""
+def _decode_audio_48k(path, channels):
+    """원곡(mp3 등) -> 48kHz float 리스트(스테레오는 L/R 인터리브). macOS afconvert."""
     fd, tmp = tempfile.mkstemp(suffix=".wav")
     os.close(fd)
     try:
         r = subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@%d" % SR,
-                            "-c", "1", path, tmp], capture_output=True)
+                            "-c", str(channels), path, tmp], capture_output=True)
         if r.returncode != 0:
             raise SystemExit("afconvert 실패 (macOS 전용): %s"
                              % r.stderr.decode(errors="replace").strip())
         w = wave.open(tmp)
-        n = w.getnframes()
-        raw = w.readframes(n)
+        n = w.getnframes() * w.getnchannels()
+        raw = w.readframes(w.getnframes())
         w.close()
     finally:
         os.unlink(tmp)
@@ -467,9 +469,13 @@ def adopt_original_audio(path, tmap, tracks, name):
     전역 오프셋을 찾고, 곡을 6구간으로 잘라 국소 오프셋의 산포를 계측한다.
     산포가 게이트를 넘으면 실패 처리 — 어긋난 원곡으로 게임이 만들어지는 것보다
     변환이 죽는 쪽이 낫다.
+
+    스테레오로 채택한다(신스 렌더만 모노) — 원곡을 트는 이유가 '노래답게'인데
+    스테레오 이미지를 버리면 반쪽이다. 정렬 계측만 모노 믹스다운으로 한다.
     """
-    samples = _decode_audio_mono48k(path)
-    flux, fps = _flux(samples)
+    inter = _decode_audio_48k(path, 2)   # L/R 인터리브
+    mono = [(inter[i] + inter[i + 1]) * 0.5 for i in range(0, len(inter) - 1, 2)]
+    flux, fps = _flux(mono)
 
     dr_beats = sorted(set(
         n[0] for tr in tracks if tr["drums"] for n in tr["notes"]
@@ -521,13 +527,15 @@ def adopt_original_audio(path, tmap, tracks, name):
             % (sd, ALIGN_SD_GATE_MS, rng, ALIGN_RANGE_GATE_MS))
 
     # 채보 시각 t 의 소리는 원곡 (t + off) 에 있다 -> 원곡을 -off 만큼 민다.
+    # 인터리브 버퍼라 프레임 수 x2 로 자르고 붙인다.
     lead = int(round(-best_o * SR))
     if lead >= 0:
-        buf = [0.0] * lead + samples
+        buf = [0.0] * (lead * 2) + inter
     else:
-        buf = samples[-lead:]
+        buf = inter[(-lead) * 2:]
     return buf, {
         "original_audio": os.path.basename(path),
+        "audio_channels": 2,
         "align_offset_ms": best_o * 1000.0,
         "align_local_ms": locals_ms,
         "align_sd_ms": sd,
@@ -826,15 +834,20 @@ def main():
     audio_meta = {}
     if args.audio:
         buf, audio_meta = adopt_original_audio(args.audio, tmap, tracks, name)
+        # 인터리브 버퍼를 그대로 정규화한다 — RMS 는 양 채널 평균이 되고,
+        # 리미터 블록(64샘플=32프레임)의 게인이 L/R 에 같이 걸려 채널 연동이
+        # 공짜로 성립한다. 채널을 갈라 따로 걸면 이미지가 좌우로 흔들린다.
         buf = loudness_normalize(buf)
-        write_wav(os.path.join(HERE, "assets", "%s.wav" % name), buf)
-        print("  원곡 채택: %s -> assets/%s.wav (신스 렌더 대체)"
+        write_wav(os.path.join(HERE, "assets", "%s.wav" % name), buf,
+                  audio_meta.get("audio_channels", 1))
+        print("  원곡 채택: %s -> assets/%s.wav (스테레오 · 신스 렌더 대체)"
               % (os.path.basename(args.audio), name))
 
     meta = {
         "bpm": base_bpm,
         "sample_rate": SR,
-        "duration_s": len(buf) / SR,
+        # buf 는 스테레오면 인터리브라 프레임 수 = len/채널
+        "duration_s": len(buf) / SR / audio_meta.get("audio_channels", 1),
         "source_midi": [os.path.basename(p) for p in args.midi],
         "melody_onsets_beats": onsets,
         "speed_marks_beats": speed_marks,

@@ -56,13 +56,16 @@ def build(bpm, seconds, accent_every=4):
     return buf, beat
 
 
-def write_wav(path, samples):
+def write_wav(path, samples, channels=1):
+    # 스테레오는 samples 를 L/R 인터리브로 넘긴다 — 데이터 배치는 같고
+    # 헤더(채널 수·바이트레이트·블록얼라인)만 달라진다.
     data = b"".join(struct.pack("<h", int(max(-1.0, min(1.0, s)) * 32767)) for s in samples)
     with open(path, "wb") as f:
         f.write(b"RIFF")
         f.write(struct.pack("<I", 36 + len(data)))
         f.write(b"WAVEfmt ")
-        f.write(struct.pack("<IHHIIHH", 16, 1, 1, SR, SR * 2, 2, 16))
+        f.write(struct.pack("<IHHIIHH", 16, 1, channels, SR,
+                            SR * 2 * channels, 2 * channels, 16))
         f.write(b"data")
         f.write(struct.pack("<I", len(data)))
         f.write(data)
