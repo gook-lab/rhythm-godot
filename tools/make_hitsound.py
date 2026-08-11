@@ -46,9 +46,13 @@ for i in range(n):
     phase += 2.0 * math.pi * f / SR
     v = math.sin(phase) * math.exp(-t * 30.0)
     if t < 0.004:                       # 어택 클릭
-        v += _noise() * math.exp(-t * 800.0) * 0.5
+        # 0.5 는 '딱' 소리가 곡 위로 튀었다("곡이랑 안 맞는다" 피드백).
+        # 절반이면 어택 정의는 남고 스냅은 죽는다.
+        v += _noise() * math.exp(-t * 800.0) * 0.25
     buf.append(v)
-write_wav(os.path.join(HERE, "assets", "hit.wav"), normalize(buf, 0.9))
+# 피크도 0.9 -> 0.62: 곡 렌더가 피크 정규화라 같은 0.9 면 매 탭이 곡과
+# 동급 크기다. 재생 트림(-4dB)과 합쳐 곡 밑에 깔리는 수준을 기본으로.
+write_wav(os.path.join(HERE, "assets", "hit.wav"), normalize(buf, 0.62))
 
 # ── miss: 단2도 불협 버즈 ──
 n = int(0.14 * SR)
@@ -59,6 +63,6 @@ for i in range(n):
     a = 1.0 if (t * 220.0) % 1.0 < 0.5 else -1.0
     b = 1.0 if (t * 233.1) % 1.0 < 0.5 else -1.0
     buf.append((a * 0.55 + b * 0.45) * e)
-write_wav(os.path.join(HERE, "assets", "miss.wav"), normalize(buf, 0.7))
+write_wav(os.path.join(HERE, "assets", "miss.wav"), normalize(buf, 0.55))
 
 print("assets/hit.wav (킥 70ms) · assets/miss.wav (불협 버즈 140ms)")

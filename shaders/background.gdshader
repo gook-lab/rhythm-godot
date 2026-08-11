@@ -23,14 +23,16 @@ void fragment() {
 		+ sin((p.x + p.y) * 1.9 + t * 3.1);
 	w = w / 6.0 + 0.5;
 
-	// 정박에서 확 밝았다가 지수 감쇠 — 콤보가 붙을수록 고동이 깊어진다.
-	float pulse = exp(-5.0 * beat_phase) * (0.05 + 0.16 * energy);
+	// 정박에서 밝았다가 지수 감쇠 — 콤보가 붙을수록 고동이 깊어진다.
+	// 첫 튜닝(0.05+0.16E, 플래시 0.10)은 "너무 번쩍거린다" 피드백 —
+	// 고동은 배경의 숨이지 조명이 아니다. 절반 이하로 눌렀다.
+	float pulse = exp(-5.0 * beat_phase) * (0.03 + 0.08 * energy);
 	float radial = 1.0 - clamp(length(p) * 0.75, 0.0, 1.0);
 
 	vec3 base = vec3(0.030, 0.036, 0.055);
 	vec3 col = base
-		+ tint * (w * 0.055 + pulse * radial)
-		+ tint * flash * 0.10 * radial;
+		+ tint * (w * 0.042 + pulse * radial)
+		+ tint * flash * 0.045 * radial;
 
 	// 비네트 — 가장자리를 눌러 경로·행성 대비를 지킨다.
 	col *= 1.0 - 0.38 * clamp(length(p) - 0.35, 0.0, 1.0);

@@ -230,7 +230,10 @@ func _restart() -> void:
 	_refresh_judge_mode_label()
 	AudioClock.set_music_volume(Records.music_vol if _real_play else 1.0)
 	var sv := Records.sfx_vol if _real_play else 1.0
-	_hitsound.volume_db = linear_to_db(maxf(sv, 0.001)) if sv > 0.001 else -80.0
+	# 기본 -4dB 트림: 히트 킥이 곡과 같은 크기면 매 탭이 곡을 덮는다
+	# ("클릭이 너무 크다" 실사용 피드백). 세부는 설정의 효과음 볼륨으로.
+	_hitsound.volume_db = (linear_to_db(maxf(sv, 0.001)) - 4.0) \
+		if sv > 0.001 else -80.0
 	_misssound.volume_db = _hitsound.volume_db
 	if _bg_mat != null:
 		_bg_mat.set_shader_parameter("tint",
@@ -757,10 +760,12 @@ func _on_judged(v: Judge.Verdict, delta_ms: float, tile: int) -> void:
 	match v:
 		Judge.Verdict.PERFECT:
 			_planets.flash(vc)
-			_bg_flash = 1.0
+			# 1.0 리셋으로 두면 초당 5탭 구간에서 스트로브가 된다 —
+			# maxf + 낮은 상한으로 '은은한 여운'까지만.
+			_bg_flash = maxf(_bg_flash, 0.5)
 		Judge.Verdict.EARLY_PERFECT, Judge.Verdict.LATE_PERFECT:
 			_planets.flash(vc)
-			_bg_flash = 0.6
+			_bg_flash = maxf(_bg_flash, 0.3)
 		Judge.Verdict.VERY_EARLY, Judge.Verdict.VERY_LATE:
 			_planets.flash(vc)
 		_:
