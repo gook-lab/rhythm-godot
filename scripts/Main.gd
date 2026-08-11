@@ -59,6 +59,8 @@ const OUTRO_GRACE_MS := 1500.0
 @onready var _camera: Camera2D = $World/Camera2D
 @onready var _planets: PlanetPair = $World/PlanetPair
 @onready var _popup: Label = $World/JudgmentPopup
+@onready var _keyviewer = $UI/KeyViewer
+@onready var _bg_mat: ShaderMaterial = $Background/BgRect.material
 @onready var _judge: Judge = $Judge
 @onready var _score: Score = $Score
 @onready var _offset_slider: HSlider = $UI/CalibrationPanel/VBox/OffsetSlider
@@ -219,6 +221,11 @@ func _restart() -> void:
 	_hold_tile = -1
 	_replay_idx = 0
 	_outro = false
+	_keyviewer.reset()
+	_bg_flash = 0.0
+	if _bg_mat != null:
+		_bg_mat.set_shader_parameter("tint",
+			_SELECT._diff_color(chart.difficulty))
 	if not _replay_mode:
 		_rec = []
 	_popup.text = ""
@@ -321,6 +328,9 @@ func _process(delta: float) -> void:
 	if _shake > 0.01:
 		_shake_t += delta
 		_shake = maxf(0.0, _shake - delta * SHAKE_DECAY)
+
+	_bg_flash = maxf(0.0, _bg_flash - delta * 3.5)
+	_update_background()
 
 	if _paused or _finished or not AudioClock.is_warm():
 		return
@@ -464,6 +474,7 @@ func _input(event: InputEvent) -> void:
 	# '뗌'은 홀드에서만 의미가 있다. pressed 필터보다 먼저 봐야 한다 —
 	# 아래로 내려가면 not k.pressed 에서 통째로 버려진다.
 	if not k.pressed:
+		_keyviewer.note_release(k.keycode)
 		# 리플레이 중 실제 손이 키를 떼도 재생 중인 홀드를 끊으면 안 된다.
 		if _hold_tile >= 0 and k.keycode == _hold_key and not _replay_mode:
 			_release_hold(AudioClock.judged_ms() - _hold_end_ms)
@@ -517,6 +528,7 @@ func _input(event: InputEvent) -> void:
 			return
 	elif k.keycode in Records.NEVER_JUDGE:
 		return
+	_keyviewer.note_press(k.keycode)
 	# 입력 즉시 히트사운드 — 판정보다 빠른 피드백. 곡의 클릭과 내 입력음의
 	# 어긋남이 곧 내 오차라서, 이게 손맛 캘리브레이션의 핵심 도구다.
 	# 실제 음악에서는 타일이 멜로디 온셋 위라 겹쳐 들린다 — 곡 선택 화면 M 키로 끈다.
@@ -583,8 +595,10 @@ func _load_replay() -> void:
 ## 밟기의 공통 코어. 실입력(_input)과 리플레이가 같은 경로를 탄다 —
 ## 갈라두면 언젠가 한쪽만 고쳐져 리플레이가 거짓말을 하게 된다.
 func _apply_press(tapped: int, delta: float, keycode: int) -> void:
-	if (_replay_mode or _auto_mode) and Records.sfx_enabled:
-		_hitsound.play()   # 실입력은 _input 이 이미 냈다(판정 전 즉시 피드백)
+	if _replay_mode or _auto_mode:
+		_keyviewer.note_tap(keycode)   # 키 이벤트가 없는 유일한 입력 소스
+		if Records.sfx_enabled:
+			_hitsound.play()   # 실입력은 _input 이 이미 냈다(판정 전 즉시 피드백)
 	_judge.judge_input(delta, tapped)
 	if not _replay_mode and not _auto_mode:
 		_rec.append(["p", tapped, delta])
@@ -596,6 +610,8 @@ func _apply_press(tapped: int, delta: float, keycode: int) -> void:
 	if orbits > 0.0:
 		_hold_tile = tapped
 		_hold_key = keycode
+		if _replay_mode or _auto_mode:
+			_keyviewer.sustain(keycode)   # 탭 플래시를 홀드 지속으로 승격
 		_hold_end_ms = _hit_times[tapped] + ChartRuntime.hold_beats_at(chart, tapped) \
 			* (60000.0 / chart.bpm) / ChartRuntime.speed_mult_at(chart, tapped)
 
@@ -643,6 +659,7 @@ func _revive_at_checkpoint() -> bool:
 ## 리듬이 된다. 판정 수가 하나 늘어나므로 _judged_total 도 홀드를 두 번 센다.
 func _release_hold(delta: float) -> void:
 	var tile := _hold_tile
+	_keyviewer.note_release(_hold_key)
 	_hold_tile = -1
 	if not AudioClock.is_warm() or _finished:
 		return
@@ -659,6 +676,13 @@ func _advance() -> void:
 
 
 var _prev_combo := 0
+
+## Perfect 순간 배경이 잠깐 밝아졌다 감쇠한다(셰이더 flash 유니폼).
+var _bg_flash := 0.0
+
+## 난이도 색 램프는 곡 선택과 같은 정의를 쓴다 — 배경 틴트가 목록의
+## 난이도 색과 같아야 '이 곡의 색'으로 읽힌다.
+const _SELECT := preload("res://scripts/SongSelect.gd")
 var _go_until := 0.0
 var _paused := false
 
@@ -669,6 +693,23 @@ static func _verdict_color(v: Judge.Verdict) -> Color:
 		Judge.Verdict.EARLY_PERFECT, Judge.Verdict.LATE_PERFECT: return Color(0.78, 1.12, 0.52)
 		Judge.Verdict.VERY_EARLY, Judge.Verdict.VERY_LATE: return Color(1.15, 0.95, 0.44)
 		_: return Color(1.20, 0.39, 0.39)
+
+
+## 배경 셰이더에 비트 위상·에너지를 먹인다. 배경이 스스로 시간을 세지
+## 않는 이유: 일시정지·시크에서 음악과 어긋난 채 혼자 고동치면 박자를
+## 방해한다 — 위상은 항상 AudioClock 에서 파생한다.
+func _update_background() -> void:
+	if _bg_mat == null:
+		return
+	var phase := 0.9   # 재생 밖(일시정지·결과)에서는 고동 끝자락에 고정
+	if not _paused and not _finished and AudioClock.is_warm() \
+			and _hit_times.size() > 1:
+		var spb := 60000.0 / chart.bpm
+		phase = fposmod(AudioClock.judged_ms() - _hit_times[0], spb) / spb
+	_bg_mat.set_shader_parameter("beat_phase", phase)
+	_bg_mat.set_shader_parameter("energy",
+		clampf(_score.combo / 40.0, 0.0, 1.0))
+	_bg_mat.set_shader_parameter("flash", _bg_flash)
 
 
 func _on_judged(v: Judge.Verdict, delta_ms: float, tile: int) -> void:
@@ -686,8 +727,10 @@ func _on_judged(v: Judge.Verdict, delta_ms: float, tile: int) -> void:
 	match v:
 		Judge.Verdict.PERFECT:
 			_planets.flash(vc)
+			_bg_flash = 1.0
 		Judge.Verdict.EARLY_PERFECT, Judge.Verdict.LATE_PERFECT:
 			_planets.flash(vc)
+			_bg_flash = 0.6
 		Judge.Verdict.VERY_EARLY, Judge.Verdict.VERY_LATE:
 			_planets.flash(vc)
 		_:
