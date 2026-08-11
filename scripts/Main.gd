@@ -73,6 +73,7 @@ const OUTRO_GRACE_MS := 1500.0
 @onready var _verdict_label: Label = $UI/ComboBox/VerdictLabel
 @onready var _combo_label: Label = $UI/ComboBox/ComboLabel
 @onready var _countdown: Label = $UI/CountdownLabel
+@onready var _judge_mode_label: Label = $UI/JudgeModeLabel
 @onready var _result: PanelContainer = $UI/ResultPanel
 @onready var _r_headline: Label = $UI/ResultPanel/Margin/VBox/Headline
 @onready var _r_rank: Label = $UI/ResultPanel/Margin/VBox/Rank
@@ -226,6 +227,7 @@ func _restart() -> void:
 	# 설정 적용. 실플레이만 — 러너가 사용자의 판정 모드·볼륨에 좌우되면
 	# 테스트가 기계마다 다르게 죽는다(save_path 격리와 같은 규약).
 	_judge.strict_scale = Records.judge_scale() if _real_play else 1.0
+	_refresh_judge_mode_label()
 	AudioClock.set_music_volume(Records.music_vol if _real_play else 1.0)
 	var sv := Records.sfx_vol if _real_play else 1.0
 	_hitsound.volume_db = linear_to_db(maxf(sv, 0.001)) if sv > 0.001 else -80.0
@@ -702,6 +704,27 @@ static func _verdict_color(v: Judge.Verdict) -> Color:
 		_: return Color(1.20, 0.39, 0.39)
 
 
+## 시작 시 판정 엄격도 체크 — 지금 어떤 창으로 채점되는지를 곡이 시작되기
+## 전에 화면으로 확인시킨다. 설정 창에서 바꾼 걸 잊고 '왜 이렇게 후하지/
+## 짜지?' 하는 상태를 없애는 게 목적이라, 값(±ms)까지 같이 쓴다.
+func _refresh_judge_mode_label() -> void:
+	if not _real_play:
+		_judge_mode_label.text = ""   # 러너 화면엔 노이즈다
+		_judge_mode_label.visible = false
+		return
+	var sc := _judge.strict_scale
+	_judge_mode_label.text = "판정 %s  ·  미스 ±%.0fms · Perfect ±%.0fms" % [
+		Records.JUDGE_NAMES.get(Records.judge_mode, "?"),
+		_judge.base_miss_ms * sc, _judge.base_perfect_ms * sc]
+	_judge_mode_label.visible = true
+	if sc > 1.01:
+		_judge_mode_label.self_modulate = Color(0.55, 0.95, 0.65)   # 관대 = 초록
+	elif sc < 0.99:
+		_judge_mode_label.self_modulate = Color(1.0, 0.55, 0.5)     # 엄격 = 빨강
+	else:
+		_judge_mode_label.self_modulate = Color(0.62, 0.68, 0.8)    # 보통 = 중립
+
+
 ## 배경 셰이더에 비트 위상·에너지를 먹인다. 배경이 스스로 시간을 세지
 ## 않는 이유: 일시정지·시크에서 음악과 어긋난 채 혼자 고동치면 박자를
 ## 방해한다 — 위상은 항상 AudioClock 에서 파생한다.
@@ -899,6 +922,15 @@ func _update_hud(t: float) -> void:
 	_combo_label.text = str(_score.combo) if _score.combo > 0 else ""
 	if _score.combo == 0:
 		_verdict_label.text = ""
+
+	# 판정 모드 라벨: 카운트인 동안은 또렷하게(시작 전 체크), 곡이 시작되면
+	# 보통 모드는 숨기고 관대·엄격만 흐리게 남긴다 — 배율이 걸린 채로
+	# 기록을 가는 걸 본인이 모르는 상태가 없어야 한다.
+	var in_countin: bool = _hit_times.size() > 1 and t < _hit_times[1]
+	if _judge_mode_label.text != "":
+		var off_mode := absf(_judge.strict_scale - 1.0) > 0.01
+		_judge_mode_label.visible = in_countin or off_mode
+		_judge_mode_label.modulate.a = 1.0 if in_countin else 0.55
 
 	# 시작 카운트다운 — 첫 타일까지 남은 박자
 	if _hit_times.size() > 1 and t < _hit_times[1]:
