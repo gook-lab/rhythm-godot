@@ -108,6 +108,10 @@ extends Resource
 
 @export var title: String = ""
 
+## 자동 산정 난이도 (adofai.gg 의 1~21 스케일 차용, make_charts.difficulty_of).
+## 0 = 미산정(구버전 채보) — 화면은 "-" 로 표시하고 레이팅 계산에서 뺀다.
+@export var difficulty: float = 0.0
+
 
 ## 인스펙터에서 필드를 빠뜨렸는지 한 곳에서 확인한다.
 func is_valid() -> bool:

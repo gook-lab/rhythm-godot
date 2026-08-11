@@ -60,6 +60,7 @@ func _scan_charts() -> Array:
 					"bpm": c.bpm,
 					"tiles": c.angles.size() - 1,
 					"secs": ht[ht.size() - 1] / 1000.0 if ht.size() > 0 else 0.0,
+					"diff": c.difficulty,
 					"speed": c.speed_changes.size() > 0,
 					# 원곡 오디오 여부. 채보 스키마엔 없지만 채널 수가 그대로
 					# 구분자다 — 신스 렌더는 전부 모노(write_wav 기본), 원곡
@@ -101,6 +102,15 @@ func _rebuild() -> void:
 		_list.add_child(_more_label("▲  위로 %d곡" % lo))
 	for i in range(lo, hi):
 		var e: Dictionary = _entries[i]
+		var row := HBoxContainer.new()
+		# 난이도 배지 (adofai.gg 색 램프). 제목과 다른 라벨인 이유: Label 은
+		# 한 색이라 한 라벨로는 '배지만 난이도색, 제목은 선택색'이 안 된다.
+		var d := Label.new()
+		d.text = "%4.1f " % e.diff if float(e.diff) > 0.0 else "  -  "
+		d.add_theme_font_size_override("font_size", 24)
+		var dc := _diff_color(float(e.diff))
+		d.modulate = dc if i == _sel else dc * Color(0.62, 0.62, 0.62)
+		row.add_child(d)
 		var l := Label.new()
 		var mark := "▶ " if i == _sel else "   "
 		# 🎵 = 원곡 오디오가 흐르는 곡. 어느 곡이 '진짜 노래'인지 고르기 전에 보여야
@@ -112,16 +122,20 @@ func _rebuild() -> void:
 			l.modulate = Color(1.15, 1.05, 0.7)
 		else:
 			l.modulate = Color(0.55, 0.6, 0.72)
-		_list.add_child(l)
+		row.add_child(l)
+		_list.add_child(row)
 	if hi < _entries.size():
 		_list.add_child(_more_label("▼  아래로 %d곡" % (_entries.size() - hi)))
 	if _entries.is_empty():
 		_info.text = "차트가 없다 — python3 tools/make_charts.py"
 		return
 	var e: Dictionary = _entries[_sel]
-	_info.text = "BPM %.0f   ·   타일 %d   ·   %d:%02d   ·   [M] 입력음 %s\n%s" % [
+	var total := Records.total_rating()
+	_info.text = "BPM %.0f   ·   타일 %d   ·   %d:%02d   ·   [M] 입력음 %s%s\n%s" % [
 		e.bpm, e.tiles, int(e.secs) / 60, int(e.secs) % 60,
-		"켬" if Records.sfx_enabled else "끔", _record_line(e.path)]
+		"켬" if Records.sfx_enabled else "끔",
+		"   ·   종합 레이팅 %.1f" % total if total > 0.0 else "",
+		_record_line(e.path)]
 
 
 ## 창 위아래의 '더 있음' 표시. 곡 행보다 작고 흐리게 — 고를 수 없는 줄이기 때문이다.
@@ -133,13 +147,34 @@ func _more_label(text: String) -> Label:
 	return l
 
 
+## 난이도 -> 색 (adofai.gg 램프 차용: 하늘 → 초록 → 노랑 → 주황 → 빨강 → 보라).
+## 구간 선형 보간 — 표가 곧 정의라 상수 색을 하드코딩해도 흩어지지 않는다.
+const DIFF_RAMP: Array = [
+	[1.0, Color(0.35, 0.85, 0.95)], [5.0, Color(0.45, 0.9, 0.5)],
+	[9.0, Color(0.95, 0.85, 0.35)], [13.0, Color(0.95, 0.55, 0.25)],
+	[17.0, Color(0.95, 0.3, 0.3)], [20.0, Color(0.75, 0.35, 0.95)],
+]
+
+static func _diff_color(d: float) -> Color:
+	if d <= 0.0:
+		return Color(0.5, 0.55, 0.65)
+	for k in range(1, DIFF_RAMP.size()):
+		if d <= float(DIFF_RAMP[k][0]):
+			var a: Array = DIFF_RAMP[k - 1]
+			var t := (d - float(a[0])) / (float(DIFF_RAMP[k][0]) - float(a[0]))
+			return (a[1] as Color).lerp(DIFF_RAMP[k][1] as Color, clampf(t, 0.0, 1.0))
+	return DIFF_RAMP[-1][1]
+
+
 ## 목록 행 끝에 붙는 기록 요약. 클리어했으면 랭크가, 못 했으면 진행도가 성적표다.
 func _record_tail(path: String) -> String:
 	var r := Records.get_record(path)
 	if r.is_empty():
 		return ""
 	if int(r.get("clears", 0)) > 0:
-		return "   —   %s %.2f%%" % [r.get("best_rank", "-"), float(r.get("best_acc", 0.0))]
+		var b := str(r.get("best_badge", ""))
+		return "   —   %s %.2f%%%s" % [r.get("best_rank", "-"),
+			float(r.get("best_acc", 0.0)), "  ✦" + b if b != "" else ""]
 	return "   —   진행 %.0f%%" % float(r.get("best_progress", 0.0))
 
 
@@ -148,10 +183,12 @@ func _record_line(path: String) -> String:
 	var r := Records.get_record(path)
 	if r.is_empty():
 		return "기록 없음 — 첫 도전"
-	return "최고 %s %.2f%%   ·   콤보 %d   ·   진행 %.0f%%   ·   클리어 %d / 플레이 %d" % [
+	var rat := float(r.get("best_rating", 0.0))
+	return "최고 %s %.2f%%   ·   콤보 %d   ·   진행 %.0f%%   ·   클리어 %d / 플레이 %d%s" % [
 		r.get("best_rank", "-"), float(r.get("best_acc", 0.0)),
 		int(r.get("best_combo", 0)), float(r.get("best_progress", 0.0)),
-		int(r.get("clears", 0)), int(r.get("plays", 0))]
+		int(r.get("clears", 0)), int(r.get("plays", 0)),
+		"   ·   레이팅 %.1f" % rat if rat > 0.0 else ""]
 
 
 func _input(event: InputEvent) -> void:

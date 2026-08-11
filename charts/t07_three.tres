@@ -10,4 +10,5 @@ planet_count = 3
 angles = PackedFloat32Array(0, 60, 120, 180, 240, 300, 0, 60, 60)
 start_offset_ms = 2000
 audio = ExtResource("2_audio")
+difficulty = 2.6
 title = "07 삼행성"

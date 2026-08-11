@@ -15,4 +15,5 @@ checkpoint_tiles = PackedInt32Array(115, 245, 396, 508)
 hold_tiles = PackedVector2Array(166, 1, 401, 1, 420, 1)
 speed_changes = PackedVector2Array(238, 2, 321, 1, 323, 2, 398, 1)
 speed_display = PackedInt32Array(238, 321, 323, 398)
+difficulty = 10.7
 title = "Neon Orbit"

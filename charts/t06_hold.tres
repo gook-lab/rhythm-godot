@@ -11,4 +11,5 @@ start_offset_ms = 2000
 audio = ExtResource("2_audio")
 checkpoint_tiles = PackedInt32Array(4)
 hold_tiles = PackedVector2Array(2, 1, 5, 2)
+difficulty = 1.1
 title = "06 홀드"

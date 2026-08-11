@@ -431,10 +431,68 @@ def write_tres(name, title, bpm, hops_wanted, start_offset_ms=None, speed_change
     return ang
 
 
+def difficulty_of(bpm, ang, hops, ghosts, mids, twirls, speed_changes, holds):
+    """난이도 자동 산정 (adofai.gg 의 1~21 스케일을 빌린 규칙 기반).
+
+    adofai.gg 는 사람이 매기지만 우리는 곡이 14개뿐이고 전부 파이프라인
+    산출물이라, '잰 숫자'로 매긴다 — 스코어(opinion.mjs)와 같은 철학이다.
+
+    성분(전부 실측 가능한 물리량):
+      속도  = 피크 탭속(2초 창 95백분위) + 평균 탭속의 로그 혼합.
+              로그인 이유: 3->6타/초가 6->9보다 훨씬 크게 어려워진다.
+      압박  = 연속 간격 130ms 미만 비율 (한계 근접 구간이 얼마나 긴가).
+      기술  = 중간회전·트월 밀도 + 토끼 구간 수 + 홀드 수. 각각 상한을
+              둔다 — 기술 요소는 '더한다'지 속도를 대체하지 않는다.
+    보정 기준(실측): 클릭 트랙(t01~) 1~3 · mureka 대역 6~13 이 되게 상수를
+    맞췄다. 절대 척도가 아니라 '우리 목록 안의 서열'이 목적이다.
+    """
+    ghost_set = set(ghosts)
+    full_hops = [1.0] + list(hops)
+    hold_d = dict(holds)
+    mult_d = dict(speed_changes or [])
+    spb_ms = 60000.0 / bpm
+    taps = []
+    t_ms, cur = 0.0, 1.0
+    for i in range(1, len(ang)):
+        cur = mult_d.get(i - 1, cur)
+        t_ms += (full_hops[i - 1] + 2.0 * hold_d.get(i - 1, 0.0)) * spb_ms / cur
+        if i not in ghost_set:
+            taps.append(t_ms)
+    if len(taps) < 3:
+        return 1.0, "탭 3개 미만"
+    span_s = (taps[-1] - taps[0]) / 1000.0
+    avg_tps = (len(taps) - 1) / max(span_s, 1e-6)
+    # 탭마다 '이후 2초 창'의 탭 수를 세고 95백분위를 피크로 쓴다 —
+    # 최댓값은 한 번의 버스트에, 평균은 쉬는 구간에 휘둘린다.
+    import bisect
+    win = [bisect.bisect_left(taps, t + 2000.0) - k for k, t in enumerate(taps)]
+    win.sort()
+    peak_tps = win[int(len(win) * 0.95)] / 2.0
+    gaps_ms = [taps[k + 1] - taps[k] for k in range(len(taps) - 1)]
+    frac_fast = sum(1 for g in gaps_ms if g < 130.0) / len(gaps_ms)
+    n = float(len(ang))
+    # 토끼 구간 수: 배율이 직전의 1.5배 이상 뛰는 경계만 센다 (보정 마크 제외).
+    rabbits, prev = 0, 1.0
+    for _, m in sorted(speed_changes or []):
+        if m > prev * 1.5:
+            rabbits += 1
+        prev = m
+    tech = (min(1.5, 30.0 * len(mids) / n) + min(1.0, 8.0 * len(twirls) / n)
+            + 0.35 * min(rabbits, 2) + min(0.6, 0.1 * len(hold_d)))
+    # 선형 혼합. 처음엔 로그 혼합이었는데 14곡이 11.1~13.0 으로 뭉쳤다 —
+    # 서열이 목적인데 변별이 없으면 실패다. 선형으로 바꾸니 5.9~10.4 로 퍼진다.
+    d = 0.9 * peak_tps + 0.75 * avg_tps + 3.2 * frac_fast + tech - 1.2
+    return (max(1.0, min(21.0, round(d, 1))),
+            "피크 %.1f타/초 · 평균 %.1f · 한계간격 %.0f%% · 기술 %.1f"
+            % (peak_tps, avg_tps, 100.0 * frac_fast, tech))
+
+
 def _emit_tres(name, title, bpm, ang, hops, twirls, ghosts, mids, checkpoints,
                start_offset_ms, speed_changes, worst, display_tiles=None,
                holds=(), planets=2):
     total = sum(hops)
+    difficulty, diff_why = difficulty_of(bpm, ang, hops, ghosts, mids, twirls,
+                                         speed_changes, holds)
     path = os.path.join(HERE, "charts", name + ".tres")
     with open(path, "w", encoding="utf-8") as f:
         f.write('[gd_resource type="Resource" script_class="Chart" load_steps=3 format=3]\n\n')
@@ -474,7 +532,9 @@ def _emit_tres(name, title, bpm, ang, hops, twirls, ghosts, mids, checkpoints,
         if speed_changes and display_tiles is not None:
             f.write("speed_display = PackedInt32Array(%s)\n"
                     % ", ".join(str(int(t)) for t in display_tiles))
+        f.write("difficulty = %s\n" % fmt(float(difficulty)))
         f.write('title = "%s"\n' % title)
+    print("%-20s 난이도 %.1f (%s)" % ("", difficulty, diff_why))
     print("%-20s 타일 %3d · %6.1f박 · %5.1fs · 카운트인 %.0fms · 착지오차 %.5fpx%s%s"
           % (name + ".tres", len(ang), total, total * 60.0 / bpm,
              start_offset_ms, worst,

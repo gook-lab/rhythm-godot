@@ -62,6 +62,45 @@ static func rank_index(r: String) -> int:
 	return maxi(RANKS.find(r), 0)
 
 
+## 클리어 배지 서열 (adofai.gg 차용). PP = 전 타일 PERFECT,
+## FC = 미스·체크포인트 없이 클리어. 랭크(정확도 가중)와 축이 다르다 —
+## E/L 섞인 노미스(FC인데 A랭크)와 미스 낀 고정확(S인데 배지 없음)이 갈린다.
+const BADGES := ["", "FC", "PP"]
+
+static func badge_index(b: String) -> int:
+	return maxi(BADGES.find(b), 0)
+
+
+## 플레이 레이팅 (adofai.gg 의 '난이도x정확도' 곡선을 단순화).
+## 난이도^1.6: 어려운 곡 클리어가 지수적으로 크다.
+## 정확도 곡선 ((acc-70)/30)^2: 70% 이하 0, 100% 에서 1 — 고정확 구간을
+## 가파르게 해 '겨우 클리어'와 '정밀 클리어'를 가른다 (100%: x1, 95%: x0.69,
+## 90%: x0.44, 80%: x0.11). 미클리어는 호출부가 0 으로 처리한다.
+static func play_rating(difficulty: float, acc: float) -> float:
+	if difficulty <= 0.0:
+		return 0.0   # 미산정 채보(구버전)는 레이팅 없음
+	var a := clampf((acc - 70.0) / 30.0, 0.0, 1.0)
+	return pow(difficulty, 1.6) * a * a
+
+
+## 종합 레이팅: 곡별 최고 레이팅을 내림차순으로 0.9^i 감쇠 합산 (osu/adofai.gg
+## 방식). 같은 곡을 갈아서 올리는 데 상한이 있고, 여러 곡을 도는 게 유리해진다.
+func total_rating() -> float:
+	var rs: Array[float] = []
+	for r in _charts.values():
+		var v := float((r as Dictionary).get("best_rating", 0.0))
+		if v > 0.0:
+			rs.append(v)
+	rs.sort()
+	rs.reverse()
+	var sum := 0.0
+	var w := 1.0
+	for v in rs:
+		sum += v * w
+		w *= 0.9
+	return sum
+
+
 ## 이 키가 지금 바인딩에서 판정키인가.
 func is_judgment_key(code: int) -> bool:
 	if code in NEVER_JUDGE:
@@ -90,7 +129,7 @@ func get_record(path: String) -> Dictionary:
 ## 결과 화면의 신기록 표시용. 키가 있으면 갱신, 값은 이전 최고치.
 ##   {acc: 이전값, combo: 이전값, progress: 이전값, rank: 이전랭크, first_clear: true}
 func record_play(path: String, acc: float, rank: String, combo: int,
-		progress: float, cleared: bool) -> Dictionary:
+		progress: float, cleared: bool, rating := 0.0, badge := "") -> Dictionary:
 	var r: Dictionary = _charts.get(path, {
 		"plays": 0, "clears": 0,
 		"best_acc": -1.0, "best_rank": "-", "best_combo": 0, "best_progress": 0.0,
@@ -101,6 +140,12 @@ func record_play(path: String, acc: float, rank: String, combo: int,
 		r.clears = int(r.clears) + 1
 		if int(r.clears) == 1:
 			improved["first_clear"] = true
+	if rating > float(r.get("best_rating", 0.0)):
+		improved["rating"] = float(r.get("best_rating", 0.0))
+		r.best_rating = rating
+	if badge_index(badge) > badge_index(str(r.get("best_badge", ""))):
+		improved["badge"] = str(r.get("best_badge", ""))
+		r.best_badge = badge
 	if acc > float(r.best_acc):
 		if float(r.best_acc) >= 0.0:
 			improved["acc"] = float(r.best_acc)

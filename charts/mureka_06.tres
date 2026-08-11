@@ -14,4 +14,5 @@ midspin_tiles = PackedInt32Array(2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16
 checkpoint_tiles = PackedInt32Array(76, 178, 280, 451, 592)
 speed_changes = PackedVector2Array(1, 1.04032714, 36, 0.830164355, 53, 0.990750711, 169, 1.56365892, 175, 1.34290319, 177, 1, 180, 2, 278, 1, 316, 2, 484, 1)
 speed_display = PackedInt32Array(1, 36, 53, 169, 175, 177, 316, 484, 180, 278)
+difficulty = 11
 title = "mureka_06"

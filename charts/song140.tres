@@ -12,4 +12,5 @@ audio = ExtResource("2_audio")
 midspin_tiles = PackedInt32Array(5, 14, 23, 32, 39, 41, 43, 47, 48, 52, 54, 57, 59, 61, 63, 65, 69, 70, 72, 74, 76, 80, 81, 85, 94, 103, 112, 118, 120, 122, 126, 130, 132, 134, 138, 142, 144, 146, 150, 154, 156, 158, 162, 170, 171, 172, 173)
 checkpoint_tiles = PackedInt32Array(88)
 speed_changes = PackedVector2Array(117, 1.5, 165, 1, 171, 0.7)
+difficulty = 7.5
 title = "칩튠 140 — 멜로디 채보"

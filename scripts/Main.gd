@@ -726,6 +726,17 @@ func _on_song_finished(failed := false) -> void:
 	if _replay_mode:
 		_r_headline.modulate = Color(0.7, 0.9, 1.0)
 	var prog := clampf(_progress_pct(), 0.0, 100.0)
+	# 레이팅·배지 (adofai.gg 차용). 실패는 레이팅 0 — '클리어의 질'의 지표라서다.
+	# PP = 전 판정 PERFECT · FC = 미스 없음. 체크포인트를 썼으면 배지 없음 —
+	# 부활로 이어붙인 노미스는 노미스가 아니다.
+	var rating := 0.0 if failed else Records.play_rating(chart.difficulty, acc)
+	var badge := ""
+	if not failed and _checkpoints_used == 0 and _score.total > 0:
+		var misses := _score.count_of(Judge.Verdict.TOO_EARLY) \
+			+ _score.count_of(Judge.Verdict.TOO_LATE)
+		if misses == 0:
+			badge = "PP" if _score.count_of(Judge.Verdict.PERFECT) == _score.total \
+				else "FC"
 	_song_progress.value = prog
 	_r_rank.text = rank
 	_r_acc.text = "정확도 %.2f%%" % acc
@@ -751,6 +762,9 @@ func _on_song_finished(failed := false) -> void:
 			_score.max_combo, _score.total, _judged_total, prog]
 		# 체크포인트를 밝히지 않으면 무한 부활로 낸 S 와 한 번에 낸 S 가 같아 보인다.
 		+ ("체크포인트 %d회 사용\n" % _checkpoints_used if _checkpoints_used > 0 else "")
+		+ ("난이도 %.1f    ·    레이팅 %.1f%s\n" % [chart.difficulty, rating,
+			"    ·    ✦ " + badge if badge != "" else ""]
+			if chart.difficulty > 0.0 else "")
 		+ "판정 오차 평균 %+.1fms   표준편차 %.1fms" % [s.mean, s.sd]
 		+ ("\n\nV 내 플레이 리플레이" if _last_replay.size() > 0 else "")
 		+ "   ·   O 오토플레이 데모"
@@ -764,10 +778,15 @@ func _on_song_finished(failed := false) -> void:
 	# 덮어쓴 사고가 있었다(스크린샷 증거). 본 게 아니라 '친 것'만 기록이다.
 	if _real_play and not _replay_mode and not _auto_mode:
 		var imp: Dictionary = Records.record_play(
-			GameState.selected_chart, acc, rank, _score.max_combo, prog, not failed)
+			GameState.selected_chart, acc, rank, _score.max_combo, prog,
+			not failed, rating, badge)
 		var marks := PackedStringArray()
 		if imp.has("first_clear"):
 			marks.append("첫 클리어")
+		if imp.has("badge") and badge != "":
+			marks.append("배지 %s 획득" % badge)
+		if imp.has("rating") and rating > 0.0:
+			marks.append("레이팅 %.1f (종합 %.1f)" % [rating, Records.total_rating()])
 		if imp.has("rank") and str(imp.rank) != "-":
 			marks.append("랭크 %s → %s" % [imp.rank, rank])
 		if imp.has("acc"):

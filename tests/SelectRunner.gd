@@ -97,8 +97,15 @@ func _ready() -> void:
 		var shown := false
 		var rows := 0
 		for ch in sel.get_node("Margin/VBox/List").get_children():
-			var t: String = (ch as Label).text
-			if t.begins_with("▶ ") and t.contains(want):
+			# 곡 줄은 HBox(난이도 배지 + 제목), '더 있음' 줄은 Label 하나다.
+			var t := ""
+			if ch is Label:
+				t = (ch as Label).text
+			else:
+				for sub in ch.get_children():
+					if sub is Label:
+						t += (sub as Label).text
+			if t.contains("▶ ") and t.contains(want):
 				shown = true
 			if not t.strip_edges().begins_with("▲") and not t.strip_edges().begins_with("▼"):
 				rows += 1

@@ -688,6 +688,32 @@ func t_records() -> void:
 	ok(str(rec.best_rank) == "P" and absf(float(rec.best_acc) - 99.2) < 1e-4,
 		"랭크·정확도 최고치가 독립으로 유지")
 
+	# 레이팅 (adofai.gg 차용): 난이도·정확도에 단조 증가, 70% 이하 0, 실패 0.
+	print("Records — 레이팅 · 배지")
+	# --script 모드엔 autoload 가 없어 인스턴스(r)로 정적 함수를 부른다.
+	var rt: float = r.play_rating(10.0, 100.0)
+	ok(absf(rt - pow(10.0, 1.6)) < 1e-6, "만점 레이팅 = 난이도^1.6 (%.1f)" % rt)
+	ok(r.play_rating(10.0, 95.0) < rt
+		and r.play_rating(10.0, 95.0) > r.play_rating(10.0, 90.0),
+		"정확도에 단조 증가")
+	ok(r.play_rating(12.0, 95.0) > r.play_rating(10.0, 95.0),
+		"난이도에 단조 증가")
+	ok(r.play_rating(10.0, 70.0) == 0.0 and r.play_rating(0.0, 100.0) == 0.0,
+		"70% 이하·미산정 난이도는 0")
+	# 배지 서열 PP > FC > 없음, 기록은 최고 배지만 유지.
+	imp = r.record_play("c3", 96.0, "S", 80, 100.0, true, 20.0, "FC")
+	ok(imp.has("badge") and imp.has("rating"), "첫 FC·레이팅 갱신 감지")
+	imp = r.record_play("c3", 94.0, "A", 70, 100.0, true, 15.0, "")
+	ok(not imp.has("badge") and not imp.has("rating"), "하향 배지·레이팅은 갱신 없음")
+	imp = r.record_play("c3", 99.0, "P", 90, 100.0, true, 30.0, "PP")
+	ok(imp.has("badge") and str(imp.badge) == "FC", "PP 가 FC 를 덮으며 이전값 반환")
+	ok(str(r.get_record("c3").best_badge) == "PP", "최고 배지 PP 유지")
+	# 종합 레이팅: 내림차순 0.9^i 감쇠 합 — 최고 한 곡 < 종합 <= 산술 합.
+	r.record_play("c4", 100.0, "P", 50, 100.0, true, 10.0, "PP")
+	var total: float = r.total_rating()
+	ok(absf(total - (30.0 + 10.0 * 0.9)) < 1e-6,
+		"종합 = 30 + 10x0.9 (%.1f)" % total)
+
 	# 저장 -> 새 인스턴스로 로드 (왕복)
 	var r2: Node = load("res://scripts/Records.gd").new()
 	r2.save_path = TEST_PATH

@@ -9,4 +9,5 @@ bpm = 120
 angles = PackedFloat32Array(0, 0, 180, 180)
 start_offset_ms = 2000
 audio = ExtResource("2_audio")
+difficulty = 1.7
 title = "02 U턴 2박"

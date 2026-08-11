@@ -15,4 +15,5 @@ checkpoint_tiles = PackedInt32Array(108, 233, 358, 479, 628)
 hold_tiles = PackedVector2Array(6, 1)
 speed_changes = PackedVector2Array(153, 2, 291, 1, 411, 2, 569, 1)
 speed_display = PackedInt32Array(411, 569, 153, 291)
+difficulty = 10.2
 title = "mureka_05"

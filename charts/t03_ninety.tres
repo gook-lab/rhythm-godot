@@ -9,4 +9,5 @@ bpm = 120
 angles = PackedFloat32Array(0, 0, 90, 90, 90)
 start_offset_ms = 2000
 audio = ExtResource("2_audio")
+difficulty = 1.9
 title = "03 90도 1.5박"
