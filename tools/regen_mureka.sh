@@ -29,8 +29,10 @@ print(re.search(r'title = \"(.*)\"', t).group(1))
 " 2>/dev/null || echo "mureka_$nn")" "$@"
 }
 
-want() {  # 인자 없으면 전부, 있으면 지정 곡만
-  [ $# -eq 0 ] && [ -z "$ONLY" ] && return 0
+want() {  # 스크립트 인자 없으면 전부, 있으면 지정 곡만
+  # ⚠️ $# 은 want 자신의 인자(항상 1)다 — 스크립트 인자는 $ONLY 로만 판단.
+  #    $# 검사를 섞었다가 무인자 실행이 전 곡을 조용히 스킵했다(실사고).
+  [ -z "$ONLY" ] && return 0
   case " $ONLY " in *" $1 "*) return 0;; esac
   return 1
 }

@@ -987,9 +987,14 @@ def main():
         return _tm0.sec_at(b1) + (-b0) * 60.0 / tempos_clean[0][1]
 
     lead_beats = float(min(range(2, 13), key=lambda nb: abs(_lead_wall(nb) - 2.5)))
-    print("  카운트인 %g박 = %.0fms (템포맵 적분)"
-          % (lead_beats, _lead_wall(lead_beats) * 1000.0))
-    shift = max(0.0, lead_beats - onsets[0])
+    # 시프트 기준은 멜로디가 아니라 '전 트랙의 첫 노트'다.
+    # 멜로디 기준으로 밀면 멜로디보다 먼저 시작하는 반주(드럼 픽업·인트로)가
+    # 카운트인 구간에 남는다 — 실측 14곡 전부 카운트인 자리에 음악이
+    # -20~-28dB 로 흐르고 있었고, 그 위에 틱이 얹혀 잡음처럼 들렸다.
+    first_any = q12(min(n[0] for tr in tracks for n in tr["notes"]))
+    shift = max(0.0, lead_beats - first_any)
+    print("  카운트인 %g박 = %.0fms (템포맵 적분 · 첫 소리 %.4g박 기준)"
+          % (lead_beats, _lead_wall(lead_beats) * 1000.0, first_any))
     # 템포 변경 지점도 1/12 격자 위로 스냅한다. 노트에 한 것과 같은 이유이자
     # 같은 원칙이다 — 게임은 속도를 '타일 단위'로만 바꿀 수 있고 타일은 격자
     # 위에만 놓이므로, 격자 밖 변경점은 채보로 표현할 방법이 아예 없다.
@@ -1273,10 +1278,26 @@ def main():
     # 원곡 모드에도 박는다: 정렬이 카운트인만큼 무음을 앞에 붙여 놓았다.
     ch = audio_meta.get("audio_channels", 1)
     ticks = int(min(4, math.floor(onsets[0] + 1e-9)))
+    placed = 0
     for kt in range(ticks):
         t0 = tmap.sec_at(onsets[0] - ticks + kt)
-        f = 1760.0 if kt == ticks - 1 else 880.0
         start = int(t0 * SR)
+        # 그 자리에 이미 음악이 있으면 틱을 안 박는다. 시프트를 전 트랙
+        # 기준으로 바꿔 신스 렌더에선 무음이 보장되지만, 원곡 mp3 는
+        # 전사에 안 잡힌 인트로가 앞에 깔려 있을 수 있다 — 재서 정한다.
+        n2 = int(0.15 * SR)
+        acc = 0.0
+        cnt = 0
+        for i2 in range(0, n2, 8):
+            j2 = (start + i2) * ch
+            if 0 <= j2 < len(buf):
+                acc += buf[j2] * buf[j2]
+                cnt += 1
+        rms_db = 10.0 * math.log10(acc / cnt) if cnt and acc > 0 else -180.0
+        if rms_db > -45.0:
+            continue   # 음악이 카운트인을 대신한다
+        placed += 1
+        f = 1760.0 if kt == ticks - 1 else 880.0
         for i2 in range(int(0.05 * SR)):
             v = math.sin(2.0 * math.pi * f * i2 / SR) \
                 * math.exp(-i2 / SR * 60.0) * 0.5
@@ -1284,9 +1305,9 @@ def main():
                 j2 = (start + i2) * ch + c2
                 if 0 <= j2 < len(buf):
                     buf[j2] = max(-1.0, min(1.0, buf[j2] + v))
-    if ticks:
+    if placed:
         write_wav(os.path.join(HERE, "assets", "%s.wav" % name), buf, ch)
-        print("  카운트인 틱 %d개 (마지막 틱은 한 옥타브 위)" % ticks)
+    print("  카운트인 틱 %d/%d개 (음악이 있는 자리는 건너뜀)" % (placed, ticks))
 
     meta = {
         "bpm": base_bpm,
