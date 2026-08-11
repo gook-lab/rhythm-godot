@@ -70,7 +70,12 @@ func _scan_charts() -> Array:
 						and (c.audio as AudioStreamWAV).stereo,
 				})
 		f = d.get_next()
-	out.sort_custom(func(a, b): return a.path < b.path)
+	# 난이도 오름차순 — 목록이 곧 성장 경로가 된다(쉬운 곡부터 아래로 내려간다).
+	# 같은 난이도는 경로순으로 고정해 실행마다 순서가 흔들리지 않게 한다.
+	out.sort_custom(func(a, b):
+		if absf(float(a.diff) - float(b.diff)) > 1e-6:
+			return float(a.diff) < float(b.diff)
+		return a.path < b.path)
 	return out
 
 
