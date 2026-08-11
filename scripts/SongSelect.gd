@@ -3,7 +3,7 @@ extends Control
 ## 곡 선택. charts/ 의 .tres 를 스캔해 목록으로 보여주고,
 ## Records 의 곡별 기록(최고 랭크·정확도·진행도)을 함께 붙인다.
 ##
-## 조작: ↑↓ 이동 · Enter/Space 시작 · K 판정키 설정 · ESC 종료
+## 조작: ↑↓ 이동 · Enter/Space 시작 · K 판정키 설정 · S 설정(판정 엄격도·음량) · ESC 종료
 ##
 ## 익스포트 빌드 함정: PCK 안에서는 리소스가 "foo.tres.remap" 으로 보일 수 있다.
 ## 확장자를 자를 때 .remap 을 먼저 벗긴다.
@@ -16,6 +16,12 @@ var _sel := 0
 ## 판정키 설정 모드. true 인 동안 키 입력은 전부 바인딩 토글로 간다.
 var _binding := false
 
+## 설정 창(얼불춤의 판정 엄격도·음량 설정을 차용). true 면 키가 설정으로 간다.
+var _settings := false
+var _set_row := 0
+const SET_ROWS := 4
+const JUDGE_ORDER: Array[String] = ["lenient", "normal", "strict"]
+
 ## 테스트 시임. 헤드리스 테스트가 씬 전환을 억제하고 선택 로직만 검증한다 —
 ## change_scene 은 테스트 러너 자신(current_scene)을 갈아치워 테스트가 죽기 때문.
 var suppress_scene_change := false
@@ -24,6 +30,8 @@ var suppress_scene_change := false
 @onready var _info: Label = $Margin/VBox/Info
 @onready var _keybind_panel: PanelContainer = $KeybindPanel
 @onready var _keys_label: Label = $KeybindPanel/Margin/VBox/Keys
+@onready var _settings_panel: PanelContainer = $SettingsPanel
+@onready var _settings_body: Label = $SettingsPanel/Margin/VBox/Body
 
 
 func _ready() -> void:
@@ -205,6 +213,9 @@ func _input(event: InputEvent) -> void:
 	if _binding:
 		_binding_input(k.keycode)
 		return
+	if _settings:
+		_settings_input(k.keycode)
+		return
 	match k.keycode:
 		KEY_UP:
 			_sel = maxi(0, _sel - 1)
@@ -221,6 +232,11 @@ func _input(event: InputEvent) -> void:
 			_binding = true
 			_keybind_panel.visible = true
 			_refresh_keys()
+		KEY_S:
+			_settings = true
+			_set_row = 0
+			_settings_panel.visible = true
+			_refresh_settings()
 		KEY_M:
 			# 입력 효과음 토글. 플레이 중(Main)이 아니라 여기 두는 이유:
 			# 바인딩이 비어 있으면 M 도 판정키다. 토글을 Main 에 두면 M 을
@@ -230,6 +246,59 @@ func _input(event: InputEvent) -> void:
 			_rebuild()
 		KEY_ESCAPE:
 			get_tree().quit()
+
+
+## 설정 창 키 처리. ↑↓ 항목 · ←→ 조절 · Enter/ESC/S 저장 후 닫기.
+func _settings_input(code: int) -> void:
+	match code:
+		KEY_ENTER, KEY_KP_ENTER, KEY_ESCAPE, KEY_S:
+			_settings = false
+			_settings_panel.visible = false
+			Records.save()
+			_rebuild()   # 오프셋·판정 모드가 Info 줄에도 영향 줄 수 있다
+		KEY_UP:
+			_set_row = (_set_row + SET_ROWS - 1) % SET_ROWS
+			_refresh_settings()
+		KEY_DOWN:
+			_set_row = (_set_row + 1) % SET_ROWS
+			_refresh_settings()
+		KEY_LEFT:
+			_adjust_setting(-1)
+		KEY_RIGHT:
+			_adjust_setting(1)
+
+
+func _adjust_setting(dir: int) -> void:
+	match _set_row:
+		0:
+			var i := JUDGE_ORDER.find(Records.judge_mode)
+			Records.judge_mode = JUDGE_ORDER[clampi(i + dir, 0, JUDGE_ORDER.size() - 1)]
+		1:
+			Records.music_vol = clampf(Records.music_vol + dir * 0.05, 0.0, 1.0)
+			AudioClock.set_music_volume(Records.music_vol)
+		2:
+			Records.sfx_vol = clampf(Records.sfx_vol + dir * 0.05, 0.0, 1.0)
+		3:
+			# 슬라이더(-250~+400)와 같은 범위 — 두 화면이 같은 값을 다룬다.
+			Records.offset_ms = clampf(Records.offset_ms + dir * 5.0, -250.0, 400.0)
+	_refresh_settings()
+
+
+func _refresh_settings() -> void:
+	# 판정 창 크기를 숫자로 같이 보여준다 — '관대'라는 말보다 ±112ms 가 정보다.
+	var scale := Records.judge_scale()
+	var rows := [
+		"판정 엄격도    %s  (미스 ±%.0fms · Perfect ±%.0fms)" % [
+			Records.JUDGE_NAMES.get(Records.judge_mode, "?"),
+			80.0 * scale, 25.0 * scale],
+		"음악 볼륨      %.0f%%" % (Records.music_vol * 100.0),
+		"효과음 볼륨    %.0f%%" % (Records.sfx_vol * 100.0),
+		"입력 오프셋    %+.0fms  (결과 화면 A = 자동 보정)" % Records.offset_ms,
+	]
+	var out := PackedStringArray()
+	for i in range(rows.size()):
+		out.append(("▶ " if i == _set_row else "   ") + rows[i])
+	_settings_body.text = "\n".join(out)
 
 
 ## 판정키 설정 모드의 키 처리. 아무 키나 누르면 토글 —

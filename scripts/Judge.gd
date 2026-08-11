@@ -53,6 +53,11 @@ enum Verdict {
 ## 0.9 로 두어 맞닿기 전에 멈춘다.
 @export var overlap_guard: float = 0.9
 
+## 판정 엄격도 배율(설정: 관대 1.4 / 보통 1.0 / 엄격 0.7).
+## 기준창에만 곱한다 — 이웃-간격 캡은 물리 제약이라 배율의 영향을 받지
+## 않아야 한다(관대 모드도 겹친 판정창은 안 된다).
+var strict_scale: float = 1.0
+
 ## 현재 타일에 적용 중인 창(디버그 표시용). set_gaps() 가 갱신한다.
 var perfect_ms: float = 25.0
 var very_ms: float = 45.0
@@ -91,11 +96,12 @@ static func accuracy_weight(v: Verdict) -> float:
 func set_gaps(gap_before_ms: float, gap_after_ms: float) -> void:
 	var nearest := minf(gap_before_ms, gap_after_ms)
 	var cap := nearest * 0.5 * overlap_guard
-	miss_ms = minf(base_miss_ms, cap)
+	var b_miss := base_miss_ms * strict_scale
+	miss_ms = minf(b_miss, cap)
 	# 사다리 전체가 같은 비율로 눌린다. 등급 간 비율은 보존된다.
-	var scale := miss_ms / base_miss_ms if base_miss_ms > 0.0 else 1.0
-	very_ms = base_very_ms * scale
-	perfect_ms = base_perfect_ms * scale
+	var scale := miss_ms / b_miss if b_miss > 0.0 else 1.0
+	very_ms = base_very_ms * strict_scale * scale
+	perfect_ms = base_perfect_ms * strict_scale * scale
 
 
 func classify(delta_ms: float) -> Verdict:

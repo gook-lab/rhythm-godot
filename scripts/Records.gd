@@ -51,6 +51,21 @@ var bound_keys := PackedInt32Array()
 ## 그래서 기본은 켜 두고 선택으로 남긴다.
 var sfx_enabled := true
 
+## 판정 엄격도 (얼불춤의 관대/보통/엄격 설정). 창 배율로 작동한다 —
+## 관대 x1.4(미스 ±112ms) · 보통 x1.0(±80) · 엄격 x0.7(±56).
+## 이웃-간격 캡(set_gaps)은 그대로라 빠른 구간은 어느 모드든 좁다.
+var judge_mode := "normal"
+const JUDGE_SCALES := {"lenient": 1.4, "normal": 1.0, "strict": 0.7}
+const JUDGE_NAMES := {"lenient": "관대", "normal": "보통", "strict": "엄격"}
+
+## 음량(0~1). 음악은 AudioClock 버스, 효과음은 hit/miss 플레이어에 적용.
+var music_vol := 1.0
+var sfx_vol := 1.0
+
+
+func judge_scale() -> float:
+	return float(JUDGE_SCALES.get(judge_mode, 1.0))
+
 var _charts := {}   # 차트 경로 -> 기록 Dictionary
 
 
@@ -175,7 +190,8 @@ func save() -> void:
 		keys.append(int(k))
 	f.store_string(JSON.stringify({
 		"settings": {"offset_ms": offset_ms, "bound_keys": keys,
-			"sfx_enabled": sfx_enabled},
+			"sfx_enabled": sfx_enabled, "judge_mode": judge_mode,
+			"music_vol": music_vol, "sfx_vol": sfx_vol},
 		"charts": _charts,
 	}, "  "))
 
@@ -185,6 +201,9 @@ func load_file() -> void:
 	offset_ms = 0.0
 	bound_keys = PackedInt32Array()
 	sfx_enabled = true
+	judge_mode = "normal"
+	music_vol = 1.0
+	sfx_vol = 1.0
 	if not FileAccess.file_exists(save_path):
 		return
 	var f := FileAccess.open(save_path, FileAccess.READ)
@@ -200,6 +219,13 @@ func load_file() -> void:
 	if s is Dictionary:
 		offset_ms = float(s.get("offset_ms", 0.0))
 		sfx_enabled = bool(s.get("sfx_enabled", true))
+		# 모르는 모드 문자열(구버전·손편집)은 보통으로 — 조용히 x1.0 이 되는
+		# 것보다 명시적으로 되돌리는 쪽이 덜 헷갈린다.
+		judge_mode = str(s.get("judge_mode", "normal"))
+		if not JUDGE_SCALES.has(judge_mode):
+			judge_mode = "normal"
+		music_vol = clampf(float(s.get("music_vol", 1.0)), 0.0, 1.0)
+		sfx_vol = clampf(float(s.get("sfx_vol", 1.0)), 0.0, 1.0)
 		for k in (s.get("bound_keys", []) as Array):
 			bound_keys.append(int(k))
 	var c = data.get("charts", {})

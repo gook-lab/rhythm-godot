@@ -223,6 +223,13 @@ func _restart() -> void:
 	_outro = false
 	_keyviewer.reset()
 	_bg_flash = 0.0
+	# 설정 적용. 실플레이만 — 러너가 사용자의 판정 모드·볼륨에 좌우되면
+	# 테스트가 기계마다 다르게 죽는다(save_path 격리와 같은 규약).
+	_judge.strict_scale = Records.judge_scale() if _real_play else 1.0
+	AudioClock.set_music_volume(Records.music_vol if _real_play else 1.0)
+	var sv := Records.sfx_vol if _real_play else 1.0
+	_hitsound.volume_db = linear_to_db(maxf(sv, 0.001)) if sv > 0.001 else -80.0
+	_misssound.volume_db = _hitsound.volume_db
 	if _bg_mat != null:
 		_bg_mat.set_shader_parameter("tint",
 			_SELECT._diff_color(chart.difficulty))
@@ -808,6 +815,10 @@ func _on_song_finished(failed := false) -> void:
 		+ ("난이도 %.1f    ·    레이팅 %.1f%s\n" % [chart.difficulty, rating,
 			"    ·    ✦ " + badge if badge != "" else ""]
 			if chart.difficulty > 0.0 else "")
+		# 판정 모드를 밝히지 않으면 관대(x1.4)로 낸 S 와 보통 S 가 같아 보인다.
+		+ ("판정 %s (창 x%.1f)\n" % [Records.JUDGE_NAMES.get(Records.judge_mode, "?"),
+			_judge.strict_scale]
+			if _real_play and absf(_judge.strict_scale - 1.0) > 0.01 else "")
 		+ "판정 오차 평균 %+.1fms   표준편차 %.1fms" % [s.mean, s.sd]
 		+ ("\n\nV 내 플레이 리플레이" if _last_replay.size() > 0 else "")
 		+ "   ·   O 오토플레이 데모"

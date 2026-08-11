@@ -374,6 +374,20 @@ func t_judge_windows() -> void:
 	# 끝 타일(이웃 없음)은 기준값
 	j.set_gaps(INF, INF)
 	eq(j.miss_ms, 110.0, "이웃 없으면 기준값")
+
+	# 판정 엄격도(설정): 기준창에만 곱하고 이웃-간격 캡은 배율 무관이다 —
+	# 관대 모드라도 겹친 판정창은 물리적으로 안 된다.
+	print("판정창 — 엄격도 배율은 기준에만, 캡은 불변")
+	j.strict_scale = 1.4
+	j.set_gaps(INF, INF)
+	eq(j.miss_ms, 154.0, "관대 x1.4 — 미스 154")
+	eq(j.perfect_ms, 42.0, "관대 x1.4 — Perfect 42")
+	j.set_gaps(100.0, 100.0)
+	ok(j.miss_ms * 2.0 <= 100.0, "관대여도 캡은 간격의 절반 (%.1f)" % j.miss_ms)
+	j.strict_scale = 0.7
+	j.set_gaps(INF, INF)
+	eq(j.miss_ms, 77.0, "엄격 x0.7 — 미스 77")
+	j.strict_scale = 1.0
 	j.free()
 
 
@@ -727,11 +741,25 @@ func t_records() -> void:
 	# 입력음 토글도 디스크에 남아야 한다 — 껐는데 다음 실행에 다시 켜지면
 	# 설정이 아니라 그냥 잡음이다.
 	r.sfx_enabled = false
+	# 설정 창(판정 엄격도·음량)도 같은 왕복 계약이다.
+	r.judge_mode = "lenient"
+	r.music_vol = 0.35
+	r.sfx_vol = 0.6
 	r.save()
 	var r3: Node = load("res://scripts/Records.gd").new()
 	r3.save_path = TEST_PATH
 	r3.load_file()
 	ok(not r3.sfx_enabled, "왕복: 입력음 끔이 유지된다")
+	ok(str(r3.judge_mode) == "lenient" and absf(float(r3.judge_scale()) - 1.4) < 1e-6,
+		"왕복: 판정 모드 관대(x1.4) 유지")
+	ok(absf(float(r3.music_vol) - 0.35) < 1e-6 and absf(float(r3.sfx_vol) - 0.6) < 1e-6,
+		"왕복: 음량 유지")
+	r3.judge_mode = "없는모드"
+	r3.save()
+	var r4: Node = load("res://scripts/Records.gd").new()
+	r4.save_path = TEST_PATH
+	r4.load_file()
+	ok(str(r4.judge_mode) == "normal", "모르는 판정 모드는 보통으로 복구")
 
 	# 판정키: 기본은 전부, 바인딩하면 그 키만, 예약키는 어느 쪽에서도 안 된다
 	ok(r.is_judgment_key(KEY_SPACE), "기본: SPACE 허용")

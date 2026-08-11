@@ -87,6 +87,14 @@ func stop() -> void:
 	_player.stop()
 
 
+## 음악 볼륨(0~1 선형). 설정 화면과 Main 이 부른다.
+## 0 은 -80dB 로 못박는다 — linear_to_db(0) 은 -inf 라 스트림에 따라
+## 잡음·NaN 경로를 탄다.
+func set_music_volume(lin: float) -> void:
+	_player.volume_db = linear_to_db(clampf(lin, 0.001, 1.0)) \
+		if lin > 0.001 else -80.0
+
+
 ## 곡 안의 다른 지점으로 건너뛴다. 체크포인트 부활이 유일한 사용처다.
 ##
 ## 이 경로를 오래 막아 뒀던 이유가 있다: now_ms() 의 단조 클램프
