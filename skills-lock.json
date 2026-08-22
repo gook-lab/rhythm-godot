@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "skills": {
+    "godot-development": {
+      "source": "zate/cc-godot",
+      "sourceType": "github",
+      "skillPath": "plugins/gd/skills/godot-dev/SKILL.md",
+      "computedHash": "3f647f022010f95c36b9e3a244aa38af45a37586c49beb9cddbe51de6bbbb211"
+    },
+    "godot-gdscript-patterns": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "skillPath": "plugins/game-development/skills/godot-gdscript-patterns/SKILL.md",
+      "computedHash": "da390e553f8533575a5f9b94c9a7a1aed5abf629a3f687f97c8c8d5b65bac873"
+    },
+    "godot-ui": {
+      "source": "zate/cc-godot",
+      "sourceType": "github",
+      "skillPath": "plugins/gd/skills/godot-ui/SKILL.md",
+      "computedHash": "6dacfd4fd9f2ad8a51ebca86da470e3b9d37430914441a3c9efa4bfc5094c319"
+    }
+  }
+}

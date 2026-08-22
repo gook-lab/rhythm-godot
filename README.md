@@ -6,6 +6,7 @@ A Dance of Fire and Ice(얼불춤) 스타일의 **원버튼 리듬게임**. Godo
 낙하 노트가 없다 — **타일의 각도가 곧 대기 박자 수**라서 눈이 아니라 귀와 손으로 푸는 게임이다.
 
 설계 배경과 결정 근거: `~/.gstack/projects/rhythm-godot/kyb-ontact-main-design-*.md`
+작업 규칙(불변 규칙 · 검증 절차 · 병렬 세션 규약): [CLAUDE.md](CLAUDE.md)
 
 ---
 
