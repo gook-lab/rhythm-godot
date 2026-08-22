@@ -1,0 +1,41 @@
+Copyright (c) 2026 seongguk.yoon (github.com/gook-lab)
+All rights reserved.
+
+SOURCE-AVAILABLE, NOT OPEN SOURCE
+=================================
+
+This repository is published so that the code can be read — as a portfolio and
+for educational reference. Publishing it does not grant a licence to use it.
+
+You MAY:
+  * read and study the source code
+  * fork the repository on GitHub (the platform requires a fork for some kinds
+    of reading and reference)
+  * quote short excerpts with attribution, for commentary or teaching
+
+You MAY NOT, without prior written permission from the copyright holder:
+  * use this code, in whole or in part, in any other project
+  * copy, modify, merge, publish, redistribute, sublicense, or sell it
+  * use it for any commercial purpose
+  * deploy or host it as a service
+
+No trademark rights are granted.
+
+THIRD-PARTY COMPONENTS
+======================
+  * None vendored into this repository beyond the dependency manifests.
+
+Dependencies declared in the package manifests are governed by their own
+licences and are not covered by this notice.
+
+NO WARRANTY
+===========
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
+OR OTHER DEALINGS IN THE SOFTWARE.
+
+Permission requests: open an issue on this repository.
