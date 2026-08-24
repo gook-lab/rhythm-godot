@@ -1,6 +1,6 @@
 # rhythm-godot
 
-**한국어** · [English](README.en.md)
+**한국어** | [English](README.en.md)
 
 A Dance of Fire and Ice(얼불춤) 스타일의 **원버튼 리듬게임**. Godot 4.7 / GDScript.
 

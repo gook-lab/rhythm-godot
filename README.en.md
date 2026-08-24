@@ -1,6 +1,6 @@
 # rhythm-godot
 
-[한국어](README.md) · **English**
+[한국어](README.md) | **English**
 
 A Dance of Fire and Ice (ADOFAI) style **one-button rhythm game**. Godot 4.7 / GDScript.
 
