@@ -12,7 +12,7 @@ Work rules (invariants · verification · parallel session contract): [CLAUDE.md
 
 ---
 
-## The Heart of This Game
+## Timing Core — Tile-Angle-to-Beat Formula
 
 ```
 If the orbit angular velocity is fixed at 180 degrees per beat, the relative angle between tiles is the wait time.
@@ -33,7 +33,7 @@ If the orbit angular velocity is fixed at 180 degrees per beat, the relative ang
 
 So **there's no need for a note timeline data structure at all.** A single angle array generates both rendering and timing. With no two sources of truth, the bug surface itself vanishes where they could diverge. (Most clones fall apart here.)
 
-### This Formula Is Verified by Real Measurement
+### Formula Verification (tools/verify_formula.py)
 
 ```bash
 python3 tools/verify_formula.py <actual .adofai files>
@@ -84,7 +84,7 @@ Main.tscn                        safe to reload for restart
 | `Judge.gd` | ms judgment only. doesn't know render or state |
 | `Main.gd` | wiring + TileCursor state + observer/input |
 
-### 8 Rules We Keep
+### 8 Design Contracts
 
 **1. Judgment is only by audio clock ms difference.** No coord overlap, no frame count.
 
@@ -254,7 +254,7 @@ godot        # direct run
 
 **Controls:** `spacebar` judge · `R` restart
 
-### Why Make Our Own Songs
+### Custom-Song Decision (rationale)
 
 Music usually has imprecise BPM or tempo changes or groove. When judgment goes wrong,
 I can't tell if it's my code or the song. Clicks are sample-perfect —
@@ -267,7 +267,7 @@ File sizes are huge so we gitignore them and commit only the generator.
 
 ## Milestones
 
-### Weekend 1 · finish line = **"can evaluate feel"**
+### Weekend 1 Milestone — Core Judgment Loop (goal: feel is evaluable)
 
 | # | Task | Status |
 |---|---|---|
@@ -342,7 +342,7 @@ debug overlay stddev while toggling.
      inside `now_ms()`.
 5. Judgment feedback within 33ms of input
 
-### Weekend 2 · finish line = "looks like a game"
+### Weekend 2 Milestone — Presentation (goal: looks like a game)
 
 5. Orbit effect + song end · 6. result tally + cleanup
 
@@ -388,7 +388,7 @@ This lets "got it all but slightly off" differ from "got it precisely",
 so you can tell if feel improved. Rank is `P / SS / S / A / B / C / D / F` —
 P only happens if all judgments are normal Perfect.
 
-### Judgment window narrows by BPM
+### Judgment Window Scaling — inverse to BPM
 
 Fixed ±110ms and **when adjacent tile spacing drops below 220ms, windows overlap and
 one keypress counts on both tiles.**
