@@ -706,9 +706,9 @@ Calibration: click tracks (t01~) 1.0~3.8 · demo 7.5 · mureka 8.5~11.2. Not abs
 
 **Clear badges** — **PP** (every judgment Perfect) > **FC** (zero misses). Orthogonal to rank: all-E/L no-miss is "FC but A-rank", high-accuracy-with-misses is "S-rank no-badge". Checkpoint use means no badge — revived runs aren't no-miss. Record keeps only the best badge (PP covers FC).
 
-## Tightening Judgment Window — "Half the Difficulty Was Just Timing" (2026-08-10)
+## Tightening Judgment Window — Base Windows 110/60/30 → 80/45/25 (2026-08-10)
 
-Even after pushing chart density to original extra-hard (felt BPM p95 364~556), it felt easy. Miss window was ±110ms, so 100ms off didn't kill you. Measurements done: at actual human spread σ 20~30ms, Perfect ±30 was half luck.
+Half of the "it's all too easy" feel was the judgment window. Even after pushing chart density to original extra-hard (felt BPM p95 364~556), it felt easy. Miss window was ±110ms, so 100ms off didn't kill you. Measurements done: at actual human spread σ 20~30ms, Perfect ±30 was half luck.
 
 Windows 110/60/30 → **80/45/25**. Window-to-neighbor cap (`set_gaps`) stays, so fast sections still narrow automatically. Retargeted test sets tied to window values (aiming at "band center" not boundary — frame hiccup margin).
 
@@ -725,7 +725,7 @@ Real input and replay take the same path (_apply_press) — splitting them risks
 - **Outro grace**: Results popped the instant you hit the last tile, cutting the song short. Now results overlay 1.5 seconds later while **music plays uncut to the end**. We only cut on failure — die mid-song then silence means you didn't notice. Smoke's "orbit frozen" gate excludes outros so planet sitting on the last tile is correct.
 - **Mid-song exit**: ESC (pause) → **Q** song select. Judgment keys are nearly all keys so accidental fires happen; two steps is intentional.
 
-## Headless Tests Shouldn't Make Sound
+## Headless Test Muting — Bus Mute
 
 `--audio-driver CoreAudio` uses **real audio hardware.** Leave it on and every test run plays music from the speaker (actually happened once, causing confusion).
 
@@ -750,7 +750,7 @@ Autoplay presses at exact times only, so we know the judgment chain is self-cons
 | Input after song end | 5 presses, no crash |
 | R restart | Clears idx·finished·score, **keeps spread sample**, resets clock counter |
 
-### Finding: Input Path Has +11ms Bias
+### Input Path Bias — Measured +11ms
 
 Measurements all shifted positive — target 0ms came 8.8~12.3, −45 came −33.1, −85 came −72.3.
 
@@ -760,7 +760,7 @@ Measurements all shifted positive — target 0ms came 8.8~12.3, −45 came −33
 
 ---
 
-## Path as Individual Tiles
+## Path Rendering — Individual Tiles Instead of a Continuous Stroke
 
 Originally `Line2D` continuous strokes. Switching to tiles wasn't decoration — **handling convenience.** 
 
@@ -778,7 +778,7 @@ Colors change by state — you need to see what to tap now:
 | Coming | 0.14 alpha | HDR (1.15, 1.35, 1.90) |
 | **Target now** | 0.22 alpha | **HDR (2.20, 2.00, 1.10)** · width 3.5 |
 
-### Tile Shape Isn't Decided by Exit Angle Alone (2026-08-10)
+### Tile Shape — Bent Domino from Two Seams (2026-08-10)
 
 Even stacking tile types (ghost·midspin·hold·checkpoint) the path stayed "rectangle pile". Base shape was identical.
 
@@ -919,11 +919,11 @@ Smoke measured: silent watch → safe clear · 20% miss rate → health 78 survi
 
 Pause freezes `get_playback_position()` to **0**. Raw math sends clock backward by song length (measured −20.9sec). `now_ms()` holds its last value during pause.
 
-### Camera Guard is "Spike Ratio"
+### Camera Guard — Spike Ratio Instead of Max Step
 
 "Max frame move < 20px" was wrong — same code, 4 runs gave 5.2 / 10.0 / 17.5 / 36.3px max (p99 steady at 3.0~3.3px). That's measuring **OS frame hiccup**, not camera design. Real discontinuity spans frames, so measure **ratio of spikes** (frames > 8× median, threshold > 0.3% = fail).
 
-### Passed Tiles Fall Away
+### Passed-Tile Fall Animation (trackDisappearAnimation)
 
 Original's `trackDisappearAnimation`. Stepped-on tiles gravity-drop, spin, fade (1.15sec). Fully fallen tiles don't render.
 
@@ -1024,9 +1024,9 @@ Measured (mureka_14): min gap 29ms → 115ms, 120ms-under spans 104 → 13. Rema
 1. **Fill made unplayable gaps.** Greedy 2-beat steps (`a+2, a+4, …`) left 1/12-beat after 2+1/12 gap — 172bpm = **29ms**. Switched to even split (two 1+1/12-beat pieces). Calculations also switched from beat (float) to grid units (int) — rounding could push last piece past 2-beat.
 2. **Speed tiles got stuck between filler.** Speed can't move (breaks that section's speed) but filler can skip. So **insert speed tiles before density boost.** Reversed order had 35ms spans, 15 cases; reversed, min 105ms.
 
-### Tone — "Doesn't Sound Like the Original" (2026-08-10)
+### Tone — Band-Limited Synthesis · ADSR · Drum Filters (2026-08-10)
 
-Audio played fine but sounded wrong. Root: synthesis. Three things overlapped.
+Exactly as the feedback said — "doesn't sound like the original": audio played fine but sounded wrong. Root: synthesis. Three things overlapped.
 
 | | Before | After |
 |---|---|---|
@@ -1055,7 +1055,7 @@ Tuning by number, re-measurable:
 python3 tools/synth.py    # spectrum centroid · peaks · folds self-check
 ```
 
-### Real Audio Adoption (`--audio`) — Play Actual Song, Not Synth (2026-08-10)
+### Real Audio Adoption (`--audio`) — MP3 Playback · MIDI for Tile Placement Only (2026-08-10)
 
 Tuned tone still isn't original. MP3 → tiles-only, MIDI just places:
 
@@ -1079,7 +1079,7 @@ Trade: speed_changes gets fine-grained noise (±7%, mureka_09 212 instances), me
 
 Source map (stem MIDI ↔ original): **mureka_NN ↔ `~/Downloads/midis (NN−1)`** (01 unnumbered). Get real MP3 per-song from Mureka; currently mureka_09 only.
 
-### Mix — "Performance Melody" ≠ "Song Star" (2026-08-10)
+### Mix — Separating Chart Voice from Lead Voice (2026-08-10)
 
 Even after tone-tuning, some felt off. Two causes, one is us.
 
@@ -1137,7 +1137,7 @@ Examples: `mureka_11 ▁▁▂▃▄▅▄▅▅▅▅▄▂▃▂▂▃▁` · 
 
 Knobs: `CEIL_EASY_MS` (intro) · `CEIL_HARD_MS` (climax). Tighten both for overall hard, spread them for arc.
 
-### Rabbit Isn't Tempo, It's Chart-Side (2026-08-10)
+### Rabbit Speed-Up — Chart Decision, Not Transcribed Tempo (2026-08-10)
 
 13 of 14 songs had zero rabbits, all from tempo-change transcription dejittered-flat. Real rabbit is **chart effect**, not beat.
 
@@ -1151,7 +1151,7 @@ Pick conditions all from geometry/structure: gaps ≤1 beat in section (max 2× 
 - **Tail anchor**: Melody ends, accompaniment's tail (max 11.4sec) beyond chart — "complete" mid-song. Anchor **all tracks' last note**, boost's tail buffer (max tail 11.4 → 5.4sec, rest is note sustain echo). ⚠️ Insert speed before tail — after, tail's tempo change points lose tiles (measured mureka_07 433-beat FAIL).
 - **Virtual render**: 850 tiles every cursor = 20-point rounded polygon + marker = hitches (28fps measured). Skip off-screen (camera radius 1050px). Stays 30~60 tiles around cursor. 693-tile chart hit 145fps.
 
-### Verification Two-Pass — Never Math Twice
+### Verification Two-Pass — Python File Check · GDScript Engine Check
 
 1. **Python**: Tempo-map integral "true wall-clock" vs **file .tres parsed** recalculated hitime. Not memory midpoint — file under test catches serialize truncation, dropped fields, tile bugs (0.005ms error measured).
 2. **GDScript** (`tests/verify_chart.gd`): Engine's `ChartRuntime.hit_times_ms` matches same truth. Python alone misses "understood same wrong way" — game code is final arbiter (0.004ms error).
@@ -1160,7 +1160,7 @@ Fixture (`make_test_midi.py`) plants all traps: 2 tempo changes (one no-note spo
 
 Precision: `.tres` numbers `%.9g` format. `%g` (6sig) truncates 2/3 ratio → 0.666667, hitime drifts long songs.
 
-### Parser Verified vs Writer
+### Parser Verification — SMF Fixtures Independent of the Writer
 
 `tools/test_midilib.py` — hand-crafted SMF bytes fed straight to parser. Self-testing (writer-output only) risks shared misunderstanding. Our writer skips running status; real AI MIDIs commonly use it (chained note-on, vel0=off, meta cancels, skip events, duplicate same-pitch on, FIFO). All tested here only.
 
@@ -1172,7 +1172,7 @@ External integration: Wikipedia MIDI sample (format 1, 6 tracks, 177 notes) thro
 
 These issues only showed up after adding real songs. Fixture charts are short and geometrically exact, so all four stayed silently quiet.
 
-### U-turns Are Poised on the Wrap Boundary (`TURN_EPS_DEG`)
+### U-turn Detection — Band at the fposmod Boundary (`TURN_EPS_DEG`)
 
 A U-turn is when sweep equals exactly `0 = 360`. But that value sits on the boundary of `fposmod`. When just 0.001° of error slips in, one side gives `0.0006` (→ 0.0 beats) and the other gives `359.9994` (→ 2.0 beats) — **the same U-turn reads backwards**. `is_zero_approx`(1e-6) catches only one end.
 
@@ -1180,13 +1180,13 @@ Measured: in the same chart, Python(float64) gave 2 beats and the engine(float32
 
 Both ends count as U-turns. A 1.0° margin is 1000× bigger than float error (~0.001°) and 15× smaller than the smallest grid hop (15° = 1/12 beat) — no valid values exist in between. `ChartRuntime.TURN_EPS_DEG` and `make_charts.TURN_EPS_DEG` must be identical.
 
-### Hit-time Accumulation Uses Double Precision
+### Hit-time Accumulation — Double Accumulator · float32 Storage
 
 `hit_times_ms` returns `PackedFloat32Array`. If you read `out[i-1]` to add and rewrite as `out[i] = out[i-1] + ...`, it gets **rounded to float32 every tile** and that error accumulates as a random walk. At the 200-second mark, float32's step is 0.03ms, so 848 tiles gives drift of 0.03 × sqrt(848) ~ 0.85ms.
 
 Measured: mureka_08 came in at 1.011ms, right against the cross-check tolerance of 1.5ms. Moving accumulation to a double local variable (storage stays float32) — **0.0078ms** — exactly one float32 step at that time point. Result is now independent of song length, and all 15 charts sit at 0.008~0.010ms. `run_tests.gd` locks this with a 900-tile accumulation test (reverting to the old way gives 2.53ms instant FAIL).
 
-### Loudness Normalization, Not Peak
+### Song Normalization — RMS Loudness Instead of Peak
 
 Peak normalization per song reads as different volume. When you mix several stems, a lucky peak alignment decides the whole gain — 6-stem compositions land at 18–20dB crest with −19 to −21dB RMS, but single-track song140 is 14dB / −15dB. Hit-sound volume tuned to song140's level, so **the same sound burst 6dB louder in a new composition**.
 
@@ -1205,7 +1205,7 @@ Result: 14 songs at RMS **−15.7 to −15.0dB**, hit-sound headroom variance **
 
 The last step came from **mixing**, not normalization. Drum notes are overwhelming (measured mureka_03: 1150 drums vs 126 bass), eating 55–74% of energy — lowering them makes peaks less extreme, the limiter clips less, and RMS sits closer to target. **Unfixable via normalization gets cheaper by fixing the source.**
 
-### Input Effects Can Be Toggled (M Key)
+### Input Sound Toggle (M Key)
 
 This sound has two purposes that diverge by song type. On metronome clicks, "timing gap between song click and my input sound = my error" — it's a calibration tool (A DOFAI default). But on real music, tiles sit on melody onsets by design, so **effect plays on the same sample as the melody note**.
 
@@ -1217,11 +1217,11 @@ I put it in song select, not play mode: binding is empty means M is a judgment k
 
 ---
 
-## Smoke Test Lies
+## Smoke Test False Alarms — Separating Harness Latency from Environment Noise
 
 When a test blames itself instead of the game, it hides real regressions.
 
-### Autoplay Pressed 1.5 Frames Late
+### Autoplay Latency — +1.5-Frame Quantization Compensation
 
 Frame quantization (average +½ frame) and `parse_input_event` queuing through **next-frame delivery** (+1 frame) stack. At 145fps that's +10.35ms.
 
@@ -1243,7 +1243,7 @@ Perfect ±25 narrows things so even small σ drops it. At that point accuracy me
 
 Miss verdict also tolerates hiccup: count frames stalled 25+ms **only fail if misses exceed hiccup count**. Pinning to zero makes flaky tests whose value goes ignored — they flicker.
 
-### Camera Waste Isn't Absolute
+### Camera Waste Metric — Damping Ratio Instead of Absolute Value
 
 `waste > 3.0` mixed camera behavior WITH **the path's own shape**. mureka_06's path inherently wastes 22.5×; camera cuts it to 8.5× and still gets flagged. Widening window ±2 → ±12 improves path to 9.4 → 6.0 but planets drift 402px away — camera can't fix it.
 
