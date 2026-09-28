@@ -65,6 +65,8 @@ var _cam_wall_ms: Array[float] = []   # 그 이동이 일어난 프레임의 벽
 var _cam_clock_ms: Array[float] = []  # 그 이동이 일어난 프레임의 오디오 클럭 전진량
 var _cam_since: Array[int] = []
 var _prev_wall_ms := 0.0
+# 믹스 청크 크기 추정용 — time_since_last_mix 는 0 ~ 청크 주기 사이의 톱니라 p99 가 곧 청크다.
+var _mix_ms: Array[float] = []
 var _clock_prev := -INF
 var _inject_hitch_every := 0          # --inject-hitch=N: N프레임마다 멈춤을 넣는다(게이트 자체 검증용)
 # --inject-ms=M: 넣는 멈춤 길이(기본 90ms). 멈춤 기준(HITCH_MS) 아래로 주면 CI 러너처럼
@@ -135,6 +137,8 @@ func _process(delta: float) -> void:
 	else:
 		_since_hitch += 1
 	_prev_wall_ms = _last_wall_ms
+	if AudioClock.is_warm():
+		_mix_ms.append(AudioServer.get_time_since_last_mix() * 1000.0)
 	_last_wall_ms = float(now_us - _wall_prev_us) / 1000.0 if _wall_prev_us > 0 else 0.0
 	_wall_prev_us = now_us
 	var wall := float(Time.get_ticks_usec() - _t0) / 1_000_000.0
@@ -436,11 +440,20 @@ func _finish(reached_end: bool, wall: float) -> void:
 	if pin_pct > 8.0:
 		print("  FAIL 공전이 %.1f%% 의 프레임에서 멈춰 있다 — 렌더 커서가 판정 커서에 묶였나?"
 			% pin_pct); fails += 1
-	# 관측 분포(10회): 5.0 5.0 5.1 5.3 5.7 5.8 6.0 6.0 5.3 11.3 ms.
-	# 대부분 한 믹스 청크(~6ms)인데 가끔 두 청크가 겹친다. 15 로 잡아야 안 흔들린다.
-	if float(AudioClock.max_backstep_ms) > 15.0:
-		print("  FAIL 클럭 역행이 %.1fms — 두 청크로도 설명 안 되는 크기"
-			% float(AudioClock.max_backstep_ms)); fails += 1
+	# 관측 분포(10회, 당시 로컬): 5.0 5.0 5.1 5.3 5.7 5.8 6.0 6.0 5.3 11.3 ms.
+	# 대부분 한 믹스 청크(~6ms)인데 가끔 두 청크가 겹친다 — 그래서 고정 15 였다.
+	# 청크 크기는 환경마다 다르다. 2026-09-28 실측은 로컬·CI(macos-15) 모두 청크 10.7ms
+	# (512프레임@48kHz = 10.67ms)이고 역행 최대가 10.6ms 로 반복됐다(= 한 청크).
+	# CI 에서 두 청크(19.3ms)가 겹치자 고정 15 에 걸렸다. 그래서 '두 청크'를 그 자리에서 잰
+	# 청크로 계산하고, 예전 기준 15 는 바닥으로 남긴다.
+	var mix := _mix_ms.duplicate()
+	mix.sort()
+	var chunk: float = mix[int(mix.size() * 0.99)] if mix.size() > 0 else 0.0
+	var back_limit := maxf(15.0, chunk * 2.0)
+	print("  믹스 청크 추정 %.1fms (time_since_last_mix p99) · 역행 한계 %.1fms" % [chunk, back_limit])
+	if float(AudioClock.max_backstep_ms) > back_limit:
+		print("  FAIL 클럭 역행이 %.1fms — 두 청크(%.1fms)로도 설명 안 되는 크기"
+			% [float(AudioClock.max_backstep_ms), back_limit]); fails += 1
 	print("  %s" % ("PASS" if fails == 0 else "FAILED %d" % fails))
 	get_tree().quit(fails)
 
