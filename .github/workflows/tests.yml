@@ -47,18 +47,26 @@ jobs:
           echo "code=$code" >> "$GITHUB_OUTPUT"
           exit "$code"
 
-      # 카메라 게이트 자체 검증 — 90ms 멈춤을 일부러 넣어도 '멈춤'으로 분류돼
-      # 연속성 게이트에서 빠지는지 본다. 이게 실패하면 게이트가 러너 부하를 잰다는 뜻이다.
-      - name: 카메라 검증 (멈춤 주입)
+      # 카메라 게이트 자체 검증 — 러너 부하를 카메라 불연속으로 오인하지 않는지 본다.
+      #   --inject-hitch=30              : 30프레임마다 90ms 멈춤(멈춤 기준 25ms 초과)
+      #   --inject-hitch=4 --inject-ms=15: 멈춤 기준 아래의 긴 프레임 — CI 러너에서 실패하던 조건
+      # 둘 다 통과해야 한다. 경로가 진짜 끊기면 이 조건에서도 실패한다(README 카메라 가드).
+      - name: 카메라 검증 (부하 주입)
         run: |
           set +e
-          godot --headless --audio-driver CoreAudio res://tests/SmokeScene.tscn -- --autoplay --inject-hitch=30 2>&1 | tee camera-hitch.log
-          exit "${PIPESTATUS[0]}"
+          fail=0
+          for args in "--inject-hitch=30" "--inject-hitch=4 --inject-ms=15"; do
+            echo "== 카메라 검증: --autoplay $args =="
+            godot --headless --audio-driver CoreAudio res://tests/SmokeScene.tscn -- --autoplay $args 2>&1
+            [ "${PIPESTATUS[0]}" -eq 0 ] || fail=1
+          done > camera-load.log
+          cat camera-load.log
+          exit "$fail"
 
       - name: 결과 요약 (실패 · 예상된 오류 · 경고 구분)
         if: always()
         run: |
-          for f in test-output.log camera-hitch.log; do
+          for f in test-output.log camera-load.log; do
             [ -f "$f" ] || continue
             echo "# $f" >> "$GITHUB_STEP_SUMMARY"
             code="${{ steps.tests.outputs.code }}"
@@ -76,5 +84,5 @@ jobs:
           name: test-output
           path: |
             test-output.log
-            camera-hitch.log
+            camera-load.log
             import.log
