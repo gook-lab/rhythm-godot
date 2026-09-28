@@ -65,13 +65,19 @@ var _cam_wall_ms: Array[float] = []   # 그 이동이 일어난 프레임의 벽
 var _cam_clock_ms: Array[float] = []  # 그 이동이 일어난 프레임의 오디오 클럭 전진량
 var _cam_since: Array[int] = []
 var _prev_wall_ms := 0.0
-# 믹스 청크 크기 추정용 — time_since_last_mix 는 0 ~ 청크 주기 사이의 톱니라 p99 가 곧 청크다.
-var _mix_ms: Array[float] = []
 var _clock_prev := -INF
 var _inject_hitch_every := 0          # --inject-hitch=N: N프레임마다 멈춤을 넣는다(게이트 자체 검증용)
 # --inject-ms=M: 넣는 멈춤 길이(기본 90ms). 멈춤 기준(HITCH_MS) 아래로 주면 CI 러너처럼
 # '멈춤으로는 안 잡히는 긴 프레임'을 재현한다.
 var _inject_ms := 90
+# --inject-mix-stall=N --inject-mix-ms=M: N프레임마다 AudioServer.lock() 으로 믹서를 M ms 막는다.
+# 오디오 장치/믹스 스레드가 멈췄다 재개하는 상황의 재현용(역행 분류 자체 검증).
+var _inject_mix_every := 0
+var _inject_mix_ms := 70
+var _mix_thread: Thread
+# --inject-raw-seek=S: 곡 S초 지점에서 AudioClock.seek() 를 거치지 않고 재생 노드를 300ms
+# 되감는다. 금지된 경로(AudioClock 머리말)로 생기는 '진짜' 역행 — 게이트 음성 대조용.
+var _inject_raw_seek_s := -1.0
 var _cam_path := 0.0                # 카메라가 실제로 지나간 총 거리
 var _cam_first := Vector2.INF
 var _cam_last := Vector2.ZERO
@@ -107,6 +113,12 @@ func _ready() -> void:
 			_inject_hitch_every = int(a.split("=")[1])
 		elif a.begins_with("--inject-ms="):
 			_inject_ms = int(a.split("=")[1])
+		elif a.begins_with("--inject-mix-stall="):
+			_inject_mix_every = int(a.split("=")[1])
+		elif a.begins_with("--inject-mix-ms="):
+			_inject_mix_ms = int(a.split("=")[1])
+		elif a.begins_with("--inject-raw-seek="):
+			_inject_raw_seek_s = float(a.split("=")[1])
 	var scene: PackedScene = load("res://scenes/Main.tscn")
 	_main = scene.instantiate()
 	if chart_path != "":
@@ -127,6 +139,22 @@ func _process(delta: float) -> void:
 	_frames += 1
 	if _inject_hitch_every > 0 and _frames % _inject_hitch_every == 0:
 		OS.delay_msec(_inject_ms)
+	if _inject_raw_seek_s >= 0.0 and AudioClock.is_warm() \
+			and float(AudioClock.now_ms()) >= _inject_raw_seek_s * 1000.0:
+		_inject_raw_seek_s = -1.0
+		var pl: AudioStreamPlayer = AudioClock.get_node("AudioStreamPlayer")
+		pl.seek(maxf(pl.get_playback_position() - 0.3, 0.0))
+	# 믹서만 멈추고 게임 스레드는 계속 돈다 — 별도 스레드가 믹스 락을 잡고 있는 동안
+	# 러너·Main 은 평소처럼 now_ms() 를 샘플링한다(CI 에서 오디오 스레드만 밀린 상황).
+	if _inject_mix_every > 0 and _frames % _inject_mix_every == 0 and AudioClock.is_warm() \
+			and (_mix_thread == null or not _mix_thread.is_alive()):
+		if _mix_thread != null:
+			_mix_thread.wait_to_finish()
+		_mix_thread = Thread.new()
+		_mix_thread.start(func() -> void:
+			AudioServer.lock()
+			OS.delay_msec(_inject_mix_ms)
+			AudioServer.unlock())
 	# 프레임이 크게 밀린 순간. 그 사이에 히트타임이 들어오면 자동플레이는
 	# 아무리 정확해도 늦게 누를 수밖에 없다 — 미스 허용치의 근거가 된다.
 	if delta > HITCH_MS / 1000.0:
@@ -137,8 +165,6 @@ func _process(delta: float) -> void:
 	else:
 		_since_hitch += 1
 	_prev_wall_ms = _last_wall_ms
-	if AudioClock.is_warm():
-		_mix_ms.append(AudioServer.get_time_since_last_mix() * 1000.0)
 	_last_wall_ms = float(now_us - _wall_prev_us) / 1000.0 if _wall_prev_us > 0 else 0.0
 	_wall_prev_us = now_us
 	var wall := float(Time.get_ticks_usec() - _t0) / 1_000_000.0
@@ -267,6 +293,8 @@ func _tile_path_waste() -> float:
 
 
 func _finish(reached_end: bool, wall: float) -> void:
+	if _mix_thread != null:
+		_mix_thread.wait_to_finish()
 	set_process(false)
 	var score: Score = _main.get_node("Score")
 	var chart: Chart = _main.get("chart")
@@ -440,20 +468,19 @@ func _finish(reached_end: bool, wall: float) -> void:
 	if pin_pct > 8.0:
 		print("  FAIL 공전이 %.1f%% 의 프레임에서 멈춰 있다 — 렌더 커서가 판정 커서에 묶였나?"
 			% pin_pct); fails += 1
-	# 관측 분포(10회, 당시 로컬): 5.0 5.0 5.1 5.3 5.7 5.8 6.0 6.0 5.3 11.3 ms.
-	# 대부분 한 믹스 청크(~6ms)인데 가끔 두 청크가 겹친다 — 그래서 고정 15 였다.
-	# 청크 크기는 환경마다 다르다. 2026-09-28 실측은 로컬·CI(macos-15) 모두 청크 10.7ms
-	# (512프레임@48kHz = 10.67ms)이고 역행 최대가 10.6ms 로 반복됐다(= 한 청크).
-	# CI 에서 두 청크(19.3ms)가 겹치자 고정 15 에 걸렸다. 그래서 '두 청크'를 그 자리에서 잰
-	# 청크로 계산하고, 예전 기준 15 는 바닥으로 남긴다.
-	var mix := _mix_ms.duplicate()
-	mix.sort()
-	var chunk: float = mix[int(mix.size() * 0.99)] if mix.size() > 0 else 0.0
-	var back_limit := maxf(15.0, chunk * 2.0)
-	print("  믹스 청크 추정 %.1fms (time_since_last_mix p99) · 역행 한계 %.1fms" % [chunk, back_limit])
-	if float(AudioClock.max_backstep_ms) > back_limit:
-		print("  FAIL 클럭 역행이 %.1fms — 두 청크(%.1fms)로도 설명 안 되는 크기"
-			% [float(AudioClock.max_backstep_ms), back_limit]); fails += 1
+	# 역행은 크기가 아니라 '원인'으로 판정한다(AudioClock.classify_backstep).
+	# 고정 한계(15ms → 청크×2)는 믹스 청크 경계만 가정했다. CI(macos-15)에서는 오디오 스레드가
+	# 70ms 가량 멈췄다 재개하면서 since_mix 외삽분이 한 번에 되돌려져 71.8ms 역행이 났다 —
+	# 재생 위치는 앞으로만 갔고 지연 보정도 그대로였다(믹서만 멈추는 재현으로 확인).
+	# 재생 위치가 뒤로 가거나 지연 보정이 늘어난 역행은 크기와 무관하게 실패다.
+	var bc: Dictionary = AudioClock.backstep_counts
+	print("  클럭 역행 분류: 청크 경계 %d · 믹스 정지 재동기화 %d · 비정상 %d (믹스 청크 %.2fms, 위치 전진 폭 중앙값)"
+		% [int(bc.chunk), int(bc.stall), int(bc.abnormal), AudioClock.mix_chunk_ms()])
+	_print_backstep_detail(AudioClock.max_backstep_detail, "최대 역행")
+	if int(bc.abnormal) > 0:
+		_print_backstep_detail(AudioClock.abnormal_detail, "첫 비정상 역행")
+		print("  FAIL 비정상 클럭 역행 %d건 — 재생 위치가 뒤로 갔거나 지연 보정이 늘었다(외삽으로 설명 안 됨)"
+			% int(bc.abnormal)); fails += 1
 	print("  %s" % ("PASS" if fails == 0 else "FAILED %d" % fails))
 	get_tree().quit(fails)
 
@@ -516,3 +543,18 @@ func _normalized_steps() -> Array[float]:
 		var dt := maxf(maxf(_cam_wall_ms[i], _cam_clock_ms[i]), 0.5)
 		out.append(_cam_steps[i] * wmed / dt if wmed > 0.0 else _cam_steps[i])
 	return out
+
+
+## 클럭 역행 한 건의 원시값. 원인 분석용 출력.
+func _print_backstep_detail(d: Dictionary, title: String) -> void:
+	if d.is_empty():
+		return
+	print("  %s %.1fms [%s] (고점 %.1fms · 청크 %.2fms):" % [title, float(d.back_ms), String(d.kind),
+		float(d.last_ms), float(d.chunk_ms)])
+	for k in ["peak", "prev", "cur"]:
+		var s: Dictionary = d.get(k, {})
+		if s.is_empty():
+			continue
+		print("    %-4s wall %.1fms · pos %.2fms · since_mix %.2fms · latency %.2fms · ms %.2f"
+			% [k, float(s.wall_us) / 1000.0, float(s.pos_s) * 1000.0, float(s.since_mix_s) * 1000.0,
+			   float(s.latency_s) * 1000.0, float(s.ms)])

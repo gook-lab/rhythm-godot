@@ -33,6 +33,7 @@ func _init() -> void:
 	t_beats_to_reach()
 	t_judge_windows()
 	t_judge_classify()
+	t_clock_backstep()
 	t_score()
 	t_speed_tiles()
 	t_twirl()
@@ -389,6 +390,32 @@ func t_judge_windows() -> void:
 	eq(j.miss_ms, 77.0, "엄격 x0.7 — 미스 77")
 	j.strict_scale = 1.0
 	j.free()
+
+
+func t_clock_backstep() -> void:
+	print("클럭 역행 분류 — 외삽 되돌림(청크·믹스 정지) vs 비정상")
+	# AudioClock 은 autoload 씬이라 --script 모드에선 없다. 순수 함수만 스크립트로 부른다.
+	var ac: GDScript = load("res://scripts/AudioClock.gd")
+	var smp := func(pos_ms: float, since_ms: float, lat_ms := 0.0) -> Dictionary:
+		return {"pos_s": pos_ms / 1000.0, "since_mix_s": since_ms / 1000.0,
+			"latency_s": lat_ms / 1000.0, "wall_us": 0, "ms": pos_ms + since_ms - lat_ms}
+	var chunk := 10.67
+	# 평범한 믹스 경계: since 가 리셋됐는데 pos 는 아직 옛 값
+	ok(ac.classify_backstep(smp.call(1000.0, 10.6), smp.call(1000.0, 0.03), chunk) == "chunk",
+		"청크 경계 되돌림 -> chunk")
+	# CI 71.8ms 와 같은 모양(재현 실측값): 믹서 정지 중 since 94.5ms 외삽 → 재개 시 pos +1청크
+	ok(ac.classify_backstep(smp.call(49720.0, 94.48), smp.call(49730.67, 4.99), chunk) == "stall",
+		"믹스 정지 재동기화(78.8ms) -> stall")
+	# 재생 위치가 뒤로 감(AudioClock.seek 를 거치지 않은 되감기 등)
+	ok(ac.classify_backstep(smp.call(5000.0, 5.0), smp.call(4700.0, 5.0), chunk) == "abnormal",
+		"재생 위치 역행 -> abnormal")
+	# 작은 크기여도 위치가 뒤로 가면 비정상 — 크기로 판단하지 않는다
+	ok(ac.classify_backstep(smp.call(5000.0, 2.0), smp.call(4998.0, 2.0), chunk) == "abnormal",
+		"2ms 위치 역행도 abnormal")
+	# 지연 보정이 늘어나 클럭이 뒤로 감
+	ok(ac.classify_backstep(smp.call(5000.0, 5.0, 10.0), smp.call(5000.0, 6.0, 40.0), chunk) == "abnormal",
+		"지연 보정 증가 -> abnormal")
+	ok(ac.classify_backstep({}, smp.call(5000.0, 5.0), chunk) == "abnormal", "고점 없음 -> abnormal")
 
 
 func t_judge_classify() -> void:

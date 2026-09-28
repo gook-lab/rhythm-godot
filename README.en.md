@@ -340,6 +340,13 @@ debug overlay stddev while toggling.
      latency jitter wasn't the culprit.
    - **Slider wiggle should never increase backward count** — if it does, offset is still
      inside `now_ms()`.
+   - Size alone can't tell the cause (2026-09-28). The mix chunk is now 10.67ms (512 frames @ 48kHz), and CI (macos-15)
+     showed a 71.8ms backward step. Stalling only the audio thread (`--inject-mix-stall`) reproduces it: peak `pos` 49720.00ms ·
+     `since_mix` 94.48ms → resume `pos` +10.67ms · `since_mix` 4.99ms, a 78.8ms step back. Playback position only moved forward
+     and latency stayed put — it was the `since_mix` extrapolation made while the mixer was stalled.
+   - So backward steps are **classified by cause** (`AudioClock.classify_backstep`). A step where playback position went back or
+     latency grew fails regardless of size; the rest are reported as chunk-boundary or mix-stall resync. As a negative control,
+     rewinding without `AudioClock.seek()` (`--inject-raw-seek`) fails.
 5. Judgment feedback within 33ms of input
 
 ### Weekend 2 Milestone — Presentation (goal: looks like a game)
