@@ -45,6 +45,20 @@ var _pause_idx := 0
 var _pause_total := 0
 var _pause_clk := 0.0
 
+## 하네스 정밀도 — 누른 결과(판정 delta)와 무관하게 하네스 쪽에서만 잰다.
+## 이 하네스는 _process 에서 클럭이 목표를 넘은 걸 보고 누르고, 그 이벤트는 다음
+## 프레임에 디스패치된다. 그래서 실제로 눌린 시각의 오차는 '폴링 지연(보낼 때 클럭 -
+## 목표) + 디스패치 프레임 간격'이다. 로컬(7ms 프레임)에선 합이 10~15ms 라 20ms 폭
+## 등급 띠를 겨냥할 수 있지만, 부하 걸린 CI 러너(프레임 p99 50ms대)에선 불가능하다
+## (실측: 오차 27~46ms 로 등급이 옆 띠로 넘어갔다). 그 상태의 등급 결과는 게임이 아니라
+## 측정 환경을 말한다 — SmokeRunner 의 입력 산포 σ SKIP 과 같은 판단이다.
+const HARNESS_BUDGET_MS := 20.0
+var _sent := {}            # idx -> [보낼 때 클럭 오프셋(ms), 보낸 시각(usec)]
+var _dispatch_ms := {}     # idx -> 보낸 뒤 다음 러너 프레임까지의 벽시계 간격(ms)
+var _inject_every := 0     # --inject-hitch=N --inject-ms=M: 하네스 정밀도 판정 자체 검증용
+var _inject_ms := 30
+var _frames := 0
+
 
 func _ready() -> void:
 	AudioServer.set_bus_mute(0, true)   # 테스트가 스피커로 나가면 안 된다
@@ -53,6 +67,11 @@ func _ready() -> void:
 	_main.set("chart", load("res://charts/t04_mixed.tres"))
 	add_child(_main)
 	_hit = _main.get("_hit_times")
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--inject-hitch="):
+			_inject_every = int(a.split("=")[1])
+		elif a.begins_with("--inject-ms="):
+			_inject_ms = int(a.split("=")[1])
 	_t0 = Time.get_ticks_usec()
 	print("조작 테스트 — 채보 %s · 타일 %d"
 		% [(_main.get("chart") as Chart).title, _hit.size() - 1])
@@ -73,6 +92,12 @@ func _press(code: int, echo := false) -> void:
 
 
 func _process(_d: float) -> void:
+	_frames += 1
+	if _inject_every > 0 and _frames % _inject_every == 0:
+		OS.delay_msec(_inject_ms)
+	for i in _sent:
+		if not _dispatch_ms.has(i):
+			_dispatch_ms[i] = float(Time.get_ticks_usec() - int(_sent[i][1])) / 1000.0
 	var wall := float(Time.get_ticks_usec() - _t0) / 1_000_000.0
 	if wall > 30.0:
 		_finish("타임아웃")
@@ -119,6 +144,7 @@ func _process(_d: float) -> void:
 			var off: float = OFFSETS[k]
 			if off < 900.0 and float(AudioClock.judged_ms()) >= _hit[idx] + off:
 				_pressed[idx] = true
+				_sent[idx] = [float(AudioClock.judged_ms()) - _hit[idx], Time.get_ticks_usec()]
 				# 타일 2 는 F 키 — 얼불춤처럼 거의 모든 키가 판정키여야 한다(양손 교타)
 				_press(KEY_F if idx == 2 else KEY_SPACE)
 				# 2) 키 리피트: 같은 프레임에 echo 를 세 번 더 보낸다.
@@ -140,8 +166,27 @@ func _check_play() -> void:
 			intended.append(o)
 	_expect(ds.size() == intended.size(),
 		"입력 판정 수 %d == 의도 %d" % [ds.size(), intended.size()])
+	var pressed_tiles: Array[int] = []
+	for k in OFFSETS.size():
+		if OFFSETS[k] < 900.0:
+			pressed_tiles.append(k + 1)
+	var imprecise := 0
 	for i in range(mini(ds.size(), intended.size())):
 		var err: float = absf(ds[i] - intended[i])
+		var tile := pressed_tiles[i]
+		var sent_off: float = float(_sent[tile][0]) if _sent.has(tile) else intended[i]
+		var gap: float = float(_dispatch_ms.get(tile, 0.0))
+		var precision := (sent_off - intended[i]) + gap
+		if precision >= HARNESS_BUDGET_MS:
+			imprecise += 1
+			_log.append("  SKIP   오프셋 %+.0f 의도 -> 실측 %+.1f — 하네스 정밀도 %.1fms (폴링 %.1f + 디스패치 %.1f) ≥ %.0fms"
+				% [intended[i], ds[i], precision, sent_off - intended[i], gap, HARNESS_BUDGET_MS])
+			# 부하와 무관하게 성립해야 하는 것: 판정은 보낸 뒤~디스패치 프레임 사이의 클럭으로 한다.
+			# 여유 15ms = 클럭이 믹스 청크 단위로 벽시계보다 앞서 가는 몫(실측 p99 +4~5ms)의 3배.
+			_expect(ds[i] >= sent_off - 1.0 and ds[i] <= sent_off + gap + 15.0,
+				"  오프셋 %+.0f: 판정 %+.1f 가 송신 %+.1f ~ 디스패치 %+.1f 사이"
+				% [intended[i], ds[i], sent_off, sent_off + gap])
+			continue
 		# 프레임 granularity(~7ms) + 입력 파싱 지연만큼 늦게 눌린다.
 		# 실측이 일관되게 +방향으로 치우친다(약 +11ms).
 		# 그중 ~7ms 는 이 하네스가 프레임마다 폴링해서 최대 한 프레임 늦게 누르는 탓이고,
@@ -150,19 +195,24 @@ func _check_play() -> void:
 		_expect(err < 20.0, "  오프셋 %+.0f 의도 -> 실측 %+.1f (오차 %.1f)"
 			% [intended[i], ds[i], err])
 
-	# 등급이 제대로 매핑됐는가
+	# 등급이 제대로 매핑됐는가 — 띠를 겨냥할 수 없던 입력이 있으면 등급 분포는 측정이 무효다.
+	# (띠 경계 자체는 run_tests.gd t_judge_classify 가 순수 함수로 검사한다)
 	_expect(score.count_of(Judge.Verdict.TOO_LATE) == 1,
 		"무입력 1건이 TOO_LATE (%d건)" % score.count_of(Judge.Verdict.TOO_LATE))
-	_expect(score.count_of(Judge.Verdict.PERFECT) == 4,
-		"의도 -10ms 네 번이 PERFECT (%d건)" % score.count_of(Judge.Verdict.PERFECT))
-	_expect(score.count_of(Judge.Verdict.LATE_PERFECT) == 1,
-		"+35ms -> LATE PERFECT (%d건)" % score.count_of(Judge.Verdict.LATE_PERFECT))
-	_expect(score.count_of(Judge.Verdict.EARLY_PERFECT) == 1,
-		"-35ms -> EARLY PERFECT (%d건)" % score.count_of(Judge.Verdict.EARLY_PERFECT))
-	_expect(score.count_of(Judge.Verdict.VERY_LATE) == 1,
-		"+62ms -> LATE! (%d건)" % score.count_of(Judge.Verdict.VERY_LATE))
-	_expect(score.count_of(Judge.Verdict.VERY_EARLY) == 1,
-		"-62ms -> EARLY! (%d건)" % score.count_of(Judge.Verdict.VERY_EARLY))
+	if imprecise > 0:
+		_log.append("  SKIP 등급 분포 — 입력 %d건이 하네스 정밀도 %.0fms 를 넘었다(부하로 측정이 무효)"
+			% [imprecise, HARNESS_BUDGET_MS])
+	else:
+		_expect(score.count_of(Judge.Verdict.PERFECT) == 4,
+			"의도 -10ms 네 번이 PERFECT (%d건)" % score.count_of(Judge.Verdict.PERFECT))
+		_expect(score.count_of(Judge.Verdict.LATE_PERFECT) == 1,
+			"+35ms -> LATE PERFECT (%d건)" % score.count_of(Judge.Verdict.LATE_PERFECT))
+		_expect(score.count_of(Judge.Verdict.EARLY_PERFECT) == 1,
+			"-35ms -> EARLY PERFECT (%d건)" % score.count_of(Judge.Verdict.EARLY_PERFECT))
+		_expect(score.count_of(Judge.Verdict.VERY_LATE) == 1,
+			"+62ms -> LATE! (%d건)" % score.count_of(Judge.Verdict.VERY_LATE))
+		_expect(score.count_of(Judge.Verdict.VERY_EARLY) == 1,
+			"-62ms -> EARLY! (%d건)" % score.count_of(Judge.Verdict.VERY_EARLY))
 
 	# 3) echo 가 걸러졌는가 — 안 걸러졌으면 판정 수가 타일 수를 넘는다
 	_expect(score.total <= _hit.size() - 1,
