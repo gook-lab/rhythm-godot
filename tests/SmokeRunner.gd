@@ -46,17 +46,32 @@ var _pinned := 0     # 공전 진행률이 1.0 에 붙어 있던 프레임 수
 var _moving := 0
 var _cam_prev := Vector2.INF
 var _cam_steps: Array[float] = []   # 프레임당 카메라 타깃 이동량(px)
-# 연속성 게이트용 표본 — 벽시계로 멈춤(>HITCH_MS)이 잡힌 직후 CATCHUP_FRAMES 프레임은 뺀다.
-# 카메라 타깃은 오디오 클럭(judged_ms)에서 파생된다. 프레임이 멈추면 밀린 곡 시간을
-# 다음 프레임이 한 번에 따라잡으면서 경로가 이어져 있어도 px 이동이 크게 찍힌다 — 그건 경로가 아니라
-# 러너 부하를 재는 값이다(CI macOS 러너에서 스파이크 3.16%로 실패, 로컬은 0%).
-var _cam_cont: Array[float] = []
-# 실측(--inject-hitch=30): 스파이크 164건이 전부 멈춤 직후 1프레임에 몰렸다.
-const CATCHUP_FRAMES := 1
+# 연속성 게이트는 '프레임당 px' 가 아니라 '그 이동에 걸린 시간으로 나눈 이동량'으로 본다.
+# 카메라 타깃은 오디오 클럭(judged_ms)에서 파생되므로 긴 프레임은 경로가 이어져 있어도
+# px 이 크게 찍힌다 — 그건 경로가 아니라 러너 부하를 재는 값이다.
+# 실측(CI macos-15): 프레임 간격 p99 33ms. 멈춤 기준(25ms) 바로 아래인 22~25ms 프레임이
+# 빠른 구간에서 '스파이크'로 찍혀 0.79~1.78% 로 실패했고, 그 프레임들의 클럭 전진은
+# 벽시계와 같았다(+23.6ms / 23.6ms) — 카메라가 튄 게 아니라 프레임이 길었던 것이다.
+# 멈춤 직후 프레임을 빼던 이전 방식은 기준 아래의 긴 프레임을 못 잡았다.
 var _since_hitch := 1_000_000
+var _last_wall_ms := 0.0
 var _wall_prev_us := 0                # 멈춤은 delta 가 아니라 벽시계로 잰다(delta 는 엔진이 평활한다)
-var _cam_excluded := 0
-var _inject_hitch_every := 0          # --inject-hitch=N: N프레임마다 90ms 멈춤(게이트 자체 검증용)
+# 스파이크 진단 — 카메라 표본마다 원인 후보를 같이 적는다.
+# !! 러너는 Main 의 부모라 _process 가 Main 보다 먼저 돈다. 그래서 이번 프레임에 읽는
+#    카메라는 Main 이 '직전 프레임'에 놓은 값이고, 그 이동에 대응하는 벽시계 간격은
+#    이번이 아니라 직전 프레임에 잰 간격이다. 클럭도 같은 이유로 AudioClock._last_ms
+#    (Main 이 직전 프레임에 읽은 값)를 부수효과 없이 읽는다.
+var _cam_wall_ms: Array[float] = []   # 그 이동이 일어난 프레임의 벽시계 간격
+var _cam_clock_ms: Array[float] = []  # 그 이동이 일어난 프레임의 오디오 클럭 전진량
+var _cam_since: Array[int] = []
+var _prev_wall_ms := 0.0
+# 믹스 청크 크기 추정용 — time_since_last_mix 는 0 ~ 청크 주기 사이의 톱니라 p99 가 곧 청크다.
+var _mix_ms: Array[float] = []
+var _clock_prev := -INF
+var _inject_hitch_every := 0          # --inject-hitch=N: N프레임마다 멈춤을 넣는다(게이트 자체 검증용)
+# --inject-ms=M: 넣는 멈춤 길이(기본 90ms). 멈춤 기준(HITCH_MS) 아래로 주면 CI 러너처럼
+# '멈춤으로는 안 잡히는 긴 프레임'을 재현한다.
+var _inject_ms := 90
 var _cam_path := 0.0                # 카메라가 실제로 지나간 총 거리
 var _cam_first := Vector2.INF
 var _cam_last := Vector2.ZERO
@@ -90,6 +105,8 @@ func _ready() -> void:
 			max_seconds = float(a.split("=")[1])
 		elif a.begins_with("--inject-hitch="):
 			_inject_hitch_every = int(a.split("=")[1])
+		elif a.begins_with("--inject-ms="):
+			_inject_ms = int(a.split("=")[1])
 	var scene: PackedScene = load("res://scenes/Main.tscn")
 	_main = scene.instantiate()
 	if chart_path != "":
@@ -109,7 +126,7 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	_frames += 1
 	if _inject_hitch_every > 0 and _frames % _inject_hitch_every == 0:
-		OS.delay_msec(90)
+		OS.delay_msec(_inject_ms)
 	# 프레임이 크게 밀린 순간. 그 사이에 히트타임이 들어오면 자동플레이는
 	# 아무리 정확해도 늦게 누를 수밖에 없다 — 미스 허용치의 근거가 된다.
 	if delta > HITCH_MS / 1000.0:
@@ -119,6 +136,10 @@ func _process(delta: float) -> void:
 		_since_hitch = 0
 	else:
 		_since_hitch += 1
+	_prev_wall_ms = _last_wall_ms
+	if AudioClock.is_warm():
+		_mix_ms.append(AudioServer.get_time_since_last_mix() * 1000.0)
+	_last_wall_ms = float(now_us - _wall_prev_us) / 1000.0 if _wall_prev_us > 0 else 0.0
 	_wall_prev_us = now_us
 	var wall := float(Time.get_ticks_usec() - _t0) / 1_000_000.0
 	var idx: int = _main.get("_idx")
@@ -143,15 +164,16 @@ func _process(delta: float) -> void:
 	if _cam_prev != Vector2.INF:
 		var st := _cam_prev.distance_to(cam)
 		_cam_steps.append(st)
-		if _since_hitch > CATCHUP_FRAMES:
-			_cam_cont.append(st)
-		else:
-			_cam_excluded += 1
+		_cam_wall_ms.append(_prev_wall_ms)
+		var clk_now := float(AudioClock.get("_last_ms"))
+		_cam_clock_ms.append(clk_now - _clock_prev if is_finite(clk_now) and is_finite(_clock_prev) else 0.0)
+		_cam_since.append(_since_hitch)
 		_cam_path += st
 	else:
 		_cam_first = cam
 	_cam_prev = cam
 	_cam_last = cam
+	_clock_prev = float(AudioClock.get("_last_ms"))
 	# 액션이 화면 밖으로 나가는지. 카메라가 행성을 놓치면 이 값이 커진다.
 	var pair: Node2D = _main.get_node("World/PlanetPair")
 	_far = maxf(_far, cam.distance_to(pair.get_node("PlanetA").position))
@@ -269,12 +291,12 @@ func _finish(reached_end: bool, wall: float) -> void:
 	var med: float = steps[steps.size() / 2] if steps.size() > 0 else 0.0
 	var mx: float = steps[steps.size() - 1] if steps.size() > 0 else 0.0
 	var p99: float = steps[int(steps.size() * 0.99)] if steps.size() > 0 else 0.0
-	# 게이트용 — 히치 직후 따라잡기 프레임을 뺀 표본
-	var cont := _cam_cont.duplicate()
+	# 게이트용 — 시간 정규화 이동량(중앙 프레임 간격 기준 px)
+	var norm := _normalized_steps()
+	var cont := norm.duplicate()
 	cont.sort()
 	var cmed: float = cont[cont.size() / 2] if cont.size() > 0 else 0.0
 	var cp99: float = cont[int(cont.size() * 0.99)] if cont.size() > 0 else 0.0
-	var excl_pct := 100.0 * _cam_excluded / maxf(float(_cam_steps.size()), 1.0)
 	# 경로 낭비 배수 = 실제 지나간 거리 / 순 이동거리.
 	# 1 에 가까우면 곧게 따라간다. 카메라가 원을 그리면 크게 뛴다.
 	var net := _cam_first.distance_to(_cam_last)
@@ -283,8 +305,8 @@ func _finish(reached_end: bool, wall: float) -> void:
 	var seen_waste := _seen_path / maxf(seen_net, 1.0)
 	print("  카메라 프레임이동 중앙 %.2fpx · p99 %.2fpx · 최대 %.2fpx · 튐배수 %.1fx"
 		% [med, p99, mx, mx / maxf(med, 0.001)])
-	print("  연속성 표본(히치 직후 %d프레임 제외) 중앙 %.2fpx · p99 %.2fpx · 제외 %.1f%%"
-		% [CATCHUP_FRAMES, cmed, cp99, excl_pct])
+	print("  연속성 표본(시간 정규화, 중앙 프레임 %.1fms 기준) 중앙 %.2fpx · p99 %.2fpx"
+		% [_median_wall_ms(), cmed, cp99])
 	print("  타깃 경로 낭비 %.2fx · 실제로 보이는 낭비 %.2fx · 행성까지 최대 %.0fpx"
 		% [waste, seen_waste, _far])
 	print("  흔들림(offset) 최대 %.1fpx · 흔들리는 프레임 %.1f%% (%d)"
@@ -341,15 +363,21 @@ func _finish(reached_end: bool, wall: float) -> void:
 			# 히치 수와 완주 여부를 보면 둘을 바로 가를 수 있다.
 			print("  FAIL 자동플레이인데 판정 %d < 타일 %d (히치 %d · 완주 %s · 입력 %d)"
 				% [score.total, n, _hitches, reached_end, _pressed]); fails += 1
-		if score.health < Score.HEALTH_MAX - 0.01:
-			print("  FAIL 전부 정확인데 체력이 깎였다 (%.1f)" % score.health); fails += 1
+		# 체력은 미스로만 깎인다(Score.on_judged). 미스 자체는 위에서 '히치로 설명되는가'로
+		# 따로 가른다 — 여기서 미스까지 0 을 요구하면 같은 부하를 두 번 벌하게 된다.
+		# 실측(CI macos-15, 부하 주입): 히치 472회 · 미스 7건 → 체력 90.0 으로 여기서만 실패.
+		# 그래서 이 게이트는 '미스가 없는데 체력이 깎였다'(체력 계산 버그)만 잡는다.
+		var misses_hp := score.count_of(Judge.Verdict.TOO_LATE) + score.count_of(Judge.Verdict.TOO_EARLY)
+		if misses_hp == 0 and score.health < Score.HEALTH_MAX - 0.01:
+			print("  FAIL 미스가 없는데 체력이 깎였다 (%.1f)" % score.health); fails += 1
+		elif misses_hp > 0 and score.health < Score.HEALTH_MAX - 0.01:
+			print("  체력 %.1f — 미스 %d건 몫(미스는 위 히치 게이트가 판정)" % [score.health, misses_hp])
 	# 역행은 구조적으로 일어난다. 횟수가 아니라 크기로 본다.
 	# 한 청크(~6ms)를 크게 넘으면 그건 다른 문제다.
 	# 카메라 경로가 불연속이면 프레임당 이동량이 중앙값 대비 크게 튄다.
 	# 타일 사이 직선 lerp 를 쓰면 p99 가 25px(중앙 2px) 까지 올라갔다.
-	# 히치 직후 따라잡기 프레임을 뺀 표본으로 본다. 너무 많이 빠지면 판단할 수 없다.
-	if excl_pct > 25.0:
-		print("  FAIL 히치가 잦아 카메라 연속성을 잴 수 없다 — 표본의 %.1f%% 제외" % excl_pct); fails += 1
+	# 표본은 시간 정규화 이동량이다(위 _cam_wall_ms 주석). 멈춤 프레임도 빼지 않는다 —
+	# 멈춘 만큼 클럭이 흘렀으면 정규화 뒤 값은 평소와 같다.
 	if cp99 > maxf(cmed * 4.0 + 1.0, 6.0):
 		print("  FAIL 카메라 p99 %.1fpx 가 중앙 %.1fpx 대비 과도하다 — 경로가 불연속인가?"
 			% [cp99, cmed]); fails += 1
@@ -359,11 +387,12 @@ func _finish(reached_end: bool, wall: float) -> void:
 	# p99 는 3.0~3.3px 로 일관됐다.
 	# 진짜 불연속이면 '여러 프레임'에 걸쳐 나타난다 — 그 비율로 본다.
 	var spikes := 0
-	for st in _cam_cont:
+	for st in norm:
 		if st > cmed * 8.0 + 2.0:
 			spikes += 1
-	var spike_pct := 100.0 * spikes / maxf(float(_cam_cont.size()), 1.0)
+	var spike_pct := 100.0 * spikes / maxf(float(norm.size()), 1.0)
 	print("  카메라 스파이크 %d프레임 (%.2f%%)" % [spikes, spike_pct])
+	_print_spike_diagnosis(norm, cmed * 8.0 + 2.0)
 	if spike_pct > 0.3:
 		print("  FAIL 카메라 스파이크가 %.2f%% — 산발적 히치가 아니라 구조적이다"
 			% spike_pct); fails += 1
@@ -411,10 +440,79 @@ func _finish(reached_end: bool, wall: float) -> void:
 	if pin_pct > 8.0:
 		print("  FAIL 공전이 %.1f%% 의 프레임에서 멈춰 있다 — 렌더 커서가 판정 커서에 묶였나?"
 			% pin_pct); fails += 1
-	# 관측 분포(10회): 5.0 5.0 5.1 5.3 5.7 5.8 6.0 6.0 5.3 11.3 ms.
-	# 대부분 한 믹스 청크(~6ms)인데 가끔 두 청크가 겹친다. 15 로 잡아야 안 흔들린다.
-	if float(AudioClock.max_backstep_ms) > 15.0:
-		print("  FAIL 클럭 역행이 %.1fms — 두 청크로도 설명 안 되는 크기"
-			% float(AudioClock.max_backstep_ms)); fails += 1
+	# 관측 분포(10회, 당시 로컬): 5.0 5.0 5.1 5.3 5.7 5.8 6.0 6.0 5.3 11.3 ms.
+	# 대부분 한 믹스 청크(~6ms)인데 가끔 두 청크가 겹친다 — 그래서 고정 15 였다.
+	# 청크 크기는 환경마다 다르다. 2026-09-28 실측은 로컬·CI(macos-15) 모두 청크 10.7ms
+	# (512프레임@48kHz = 10.67ms)이고 역행 최대가 10.6ms 로 반복됐다(= 한 청크).
+	# CI 에서 두 청크(19.3ms)가 겹치자 고정 15 에 걸렸다. 그래서 '두 청크'를 그 자리에서 잰
+	# 청크로 계산하고, 예전 기준 15 는 바닥으로 남긴다.
+	var mix := _mix_ms.duplicate()
+	mix.sort()
+	var chunk: float = mix[int(mix.size() * 0.99)] if mix.size() > 0 else 0.0
+	var back_limit := maxf(15.0, chunk * 2.0)
+	print("  믹스 청크 추정 %.1fms (time_since_last_mix p99) · 역행 한계 %.1fms" % [chunk, back_limit])
+	if float(AudioClock.max_backstep_ms) > back_limit:
+		print("  FAIL 클럭 역행이 %.1fms — 두 청크(%.1fms)로도 설명 안 되는 크기"
+			% [float(AudioClock.max_backstep_ms), back_limit]); fails += 1
 	print("  %s" % ("PASS" if fails == 0 else "FAILED %d" % fails))
 	get_tree().quit(fails)
+
+
+## 스파이크 원인 분류. 게이트 판정에는 쓰지 않는다 — CI 에서 실패했을 때
+## '러너가 멈췄나 / 오디오 클럭이 튀었나 / 카메라 로직이 튀었나'를 로그만으로 가르려는 것이다.
+##   멈춤    : 그 이동이 일어난 프레임의 벽시계 간격이 HITCH_MS 초과
+##   클럭점프: 벽시계는 정상인데 클럭 전진량이 벽시계 간격의 2배 초과(오디오 드라이버·믹스 청크)
+##   로직    : 벽시계·클럭 둘 다 정상인데 카메라만 튐(경로 불연속 — 진짜 버그)
+func _print_spike_diagnosis(norm: Array[float], thr: float) -> void:
+	var n_stall := 0
+	var n_clock := 0
+	var n_logic := 0
+	var shown := 0
+	var clocks: Array[float] = []
+	for i in _cam_steps.size():
+		clocks.append(_cam_clock_ms[i])
+		if norm[i] <= thr:
+			continue
+		var w := _cam_wall_ms[i]
+		var c := _cam_clock_ms[i]
+		var kind := "로직"
+		if w > HITCH_MS:
+			kind = "멈춤"; n_stall += 1
+		elif c > maxf(w * 2.0, HITCH_MS):
+			kind = "클럭점프"; n_clock += 1
+		else:
+			n_logic += 1
+		if shown < 8:
+			shown += 1
+			print("    스파이크 #%d %s: 정규화 %.1fpx (원시 %.1fpx) · 벽시계 %.1fms · 클럭 +%.1fms · 멈춤 후 %d프레임"
+				% [i, kind, norm[i], _cam_steps[i], w, c, _cam_since[i]])
+	clocks.sort()
+	var walls := _cam_wall_ms.duplicate()
+	walls.sort()
+	var q := func(a: Array, f: float) -> float:
+		return float(a[mini(int(a.size() * f), a.size() - 1)]) if a.size() > 0 else 0.0
+	print("  스파이크 원인: 멈춤 %d · 클럭점프 %d · 로직 %d (임계 %.1fpx)"
+		% [n_stall, n_clock, n_logic, thr])
+	print("  프레임 간격 중앙 %.1fms p99 %.1fms 최대 %.1fms · 클럭 전진 중앙 %.1fms p99 %.1fms 최대 %.1fms"
+		% [q.call(walls, 0.5), q.call(walls, 0.99), q.call(walls, 1.0),
+		   q.call(clocks, 0.5), q.call(clocks, 0.99), q.call(clocks, 1.0)])
+
+
+func _median_wall_ms() -> float:
+	var w := _cam_wall_ms.filter(func(x: float) -> bool: return x > 0.0)
+	w.sort()
+	return float(w[w.size() / 2]) if w.size() > 0 else 0.0
+
+
+## 카메라 이동량을 '그 이동에 걸린 시간'으로 나눠 중앙 프레임 간격으로 환산한다.
+## 걸린 시간 = max(벽시계 간격, 클럭 전진) — 카메라는 클럭을 따라가므로 클럭이 벽시계보다
+## 많이 흘렀으면(믹스 청크 몰림) 그만큼 움직이는 게 정상이다. 반대로 클럭이 덜 흘렀으면
+## 벽시계로 나눠 과소평가 쪽으로 둔다(진짜 불연속은 시간과 무관한 점프라 그래도 잡힌다).
+## 환산 단위가 '중앙 프레임당 px' 라 기존 임계(중앙×8+2 등)의 의미가 그대로 유지된다.
+func _normalized_steps() -> Array[float]:
+	var wmed := _median_wall_ms()
+	var out: Array[float] = []
+	for i in _cam_steps.size():
+		var dt := maxf(maxf(_cam_wall_ms[i], _cam_clock_ms[i]), 0.5)
+		out.append(_cam_steps[i] * wmed / dt if wmed > 0.0 else _cam_steps[i])
+	return out

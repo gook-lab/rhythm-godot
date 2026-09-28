@@ -29,7 +29,7 @@ func _ready() -> void:
 	AudioServer.set_bus_mute(0, true)
 	var scene: PackedScene = load("res://scenes/Main.tscn")
 	_main = scene.instantiate()
-	_main.set("chart", load("res://charts/mureka_01.tres"))
+	_main.set("chart", load("res://charts/song140.tres"))
 	add_child(_main)
 	_t0 = Time.get_ticks_usec()
 	var chart: Chart = _main.get("chart")
