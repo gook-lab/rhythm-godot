@@ -359,8 +359,15 @@ func _finish(reached_end: bool, wall: float) -> void:
 			# 히치 수와 완주 여부를 보면 둘을 바로 가를 수 있다.
 			print("  FAIL 자동플레이인데 판정 %d < 타일 %d (히치 %d · 완주 %s · 입력 %d)"
 				% [score.total, n, _hitches, reached_end, _pressed]); fails += 1
-		if score.health < Score.HEALTH_MAX - 0.01:
-			print("  FAIL 전부 정확인데 체력이 깎였다 (%.1f)" % score.health); fails += 1
+		# 체력은 미스로만 깎인다(Score.on_judged). 미스 자체는 위에서 '히치로 설명되는가'로
+		# 따로 가른다 — 여기서 미스까지 0 을 요구하면 같은 부하를 두 번 벌하게 된다.
+		# 실측(CI macos-15, 부하 주입): 히치 472회 · 미스 7건 → 체력 90.0 으로 여기서만 실패.
+		# 그래서 이 게이트는 '미스가 없는데 체력이 깎였다'(체력 계산 버그)만 잡는다.
+		var misses_hp := score.count_of(Judge.Verdict.TOO_LATE) + score.count_of(Judge.Verdict.TOO_EARLY)
+		if misses_hp == 0 and score.health < Score.HEALTH_MAX - 0.01:
+			print("  FAIL 미스가 없는데 체력이 깎였다 (%.1f)" % score.health); fails += 1
+		elif misses_hp > 0 and score.health < Score.HEALTH_MAX - 0.01:
+			print("  체력 %.1f — 미스 %d건 몫(미스는 위 히치 게이트가 판정)" % [score.health, misses_hp])
 	# 역행은 구조적으로 일어난다. 횟수가 아니라 크기로 본다.
 	# 한 청크(~6ms)를 크게 넘으면 그건 다른 문제다.
 	# 카메라 경로가 불연속이면 프레임당 이동량이 중앙값 대비 크게 튄다.
