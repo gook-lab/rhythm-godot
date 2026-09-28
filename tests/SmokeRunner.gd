@@ -46,6 +46,17 @@ var _pinned := 0     # 공전 진행률이 1.0 에 붙어 있던 프레임 수
 var _moving := 0
 var _cam_prev := Vector2.INF
 var _cam_steps: Array[float] = []   # 프레임당 카메라 타깃 이동량(px)
+# 연속성 게이트용 표본 — 벽시계로 멈춤(>HITCH_MS)이 잡힌 직후 CATCHUP_FRAMES 프레임은 뺀다.
+# 카메라 타깃은 오디오 클럭(judged_ms)에서 파생된다. 프레임이 멈추면 밀린 곡 시간을
+# 다음 프레임이 한 번에 따라잡으면서 경로가 이어져 있어도 px 이동이 크게 찍힌다 — 그건 경로가 아니라
+# 러너 부하를 재는 값이다(CI macOS 러너에서 스파이크 3.16%로 실패, 로컬은 0%).
+var _cam_cont: Array[float] = []
+# 실측(--inject-hitch=30): 스파이크 164건이 전부 멈춤 직후 1프레임에 몰렸다.
+const CATCHUP_FRAMES := 1
+var _since_hitch := 1_000_000
+var _wall_prev_us := 0                # 멈춤은 delta 가 아니라 벽시계로 잰다(delta 는 엔진이 평활한다)
+var _cam_excluded := 0
+var _inject_hitch_every := 0          # --inject-hitch=N: N프레임마다 90ms 멈춤(게이트 자체 검증용)
 var _cam_path := 0.0                # 카메라가 실제로 지나간 총 거리
 var _cam_first := Vector2.INF
 var _cam_last := Vector2.ZERO
@@ -77,6 +88,8 @@ func _ready() -> void:
 			chart_path = a.split("=")[1]
 		elif a.begins_with("--max-sec="):
 			max_seconds = float(a.split("=")[1])
+		elif a.begins_with("--inject-hitch="):
+			_inject_hitch_every = int(a.split("=")[1])
 	var scene: PackedScene = load("res://scenes/Main.tscn")
 	_main = scene.instantiate()
 	if chart_path != "":
@@ -95,10 +108,18 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	_frames += 1
+	if _inject_hitch_every > 0 and _frames % _inject_hitch_every == 0:
+		OS.delay_msec(90)
 	# 프레임이 크게 밀린 순간. 그 사이에 히트타임이 들어오면 자동플레이는
 	# 아무리 정확해도 늦게 누를 수밖에 없다 — 미스 허용치의 근거가 된다.
 	if delta > HITCH_MS / 1000.0:
 		_hitches += 1
+	var now_us := Time.get_ticks_usec()
+	if _wall_prev_us > 0 and float(now_us - _wall_prev_us) > HITCH_MS * 1000.0:
+		_since_hitch = 0
+	else:
+		_since_hitch += 1
+	_wall_prev_us = now_us
 	var wall := float(Time.get_ticks_usec() - _t0) / 1_000_000.0
 	var idx: int = _main.get("_idx")
 	# 렌더가 얼어 있는지 잰다. 렌더 커서를 판정 커서에 묶어두면
@@ -122,6 +143,10 @@ func _process(delta: float) -> void:
 	if _cam_prev != Vector2.INF:
 		var st := _cam_prev.distance_to(cam)
 		_cam_steps.append(st)
+		if _since_hitch > CATCHUP_FRAMES:
+			_cam_cont.append(st)
+		else:
+			_cam_excluded += 1
 		_cam_path += st
 	else:
 		_cam_first = cam
@@ -244,6 +269,12 @@ func _finish(reached_end: bool, wall: float) -> void:
 	var med: float = steps[steps.size() / 2] if steps.size() > 0 else 0.0
 	var mx: float = steps[steps.size() - 1] if steps.size() > 0 else 0.0
 	var p99: float = steps[int(steps.size() * 0.99)] if steps.size() > 0 else 0.0
+	# 게이트용 — 히치 직후 따라잡기 프레임을 뺀 표본
+	var cont := _cam_cont.duplicate()
+	cont.sort()
+	var cmed: float = cont[cont.size() / 2] if cont.size() > 0 else 0.0
+	var cp99: float = cont[int(cont.size() * 0.99)] if cont.size() > 0 else 0.0
+	var excl_pct := 100.0 * _cam_excluded / maxf(float(_cam_steps.size()), 1.0)
 	# 경로 낭비 배수 = 실제 지나간 거리 / 순 이동거리.
 	# 1 에 가까우면 곧게 따라간다. 카메라가 원을 그리면 크게 뛴다.
 	var net := _cam_first.distance_to(_cam_last)
@@ -252,6 +283,8 @@ func _finish(reached_end: bool, wall: float) -> void:
 	var seen_waste := _seen_path / maxf(seen_net, 1.0)
 	print("  카메라 프레임이동 중앙 %.2fpx · p99 %.2fpx · 최대 %.2fpx · 튐배수 %.1fx"
 		% [med, p99, mx, mx / maxf(med, 0.001)])
+	print("  연속성 표본(히치 직후 %d프레임 제외) 중앙 %.2fpx · p99 %.2fpx · 제외 %.1f%%"
+		% [CATCHUP_FRAMES, cmed, cp99, excl_pct])
 	print("  타깃 경로 낭비 %.2fx · 실제로 보이는 낭비 %.2fx · 행성까지 최대 %.0fpx"
 		% [waste, seen_waste, _far])
 	print("  흔들림(offset) 최대 %.1fpx · 흔들리는 프레임 %.1f%% (%d)"
@@ -314,19 +347,22 @@ func _finish(reached_end: bool, wall: float) -> void:
 	# 한 청크(~6ms)를 크게 넘으면 그건 다른 문제다.
 	# 카메라 경로가 불연속이면 프레임당 이동량이 중앙값 대비 크게 튄다.
 	# 타일 사이 직선 lerp 를 쓰면 p99 가 25px(중앙 2px) 까지 올라갔다.
-	if p99 > maxf(med * 4.0 + 1.0, 6.0):
+	# 히치 직후 따라잡기 프레임을 뺀 표본으로 본다. 너무 많이 빠지면 판단할 수 없다.
+	if excl_pct > 25.0:
+		print("  FAIL 히치가 잦아 카메라 연속성을 잴 수 없다 — 표본의 %.1f%% 제외" % excl_pct); fails += 1
+	if cp99 > maxf(cmed * 4.0 + 1.0, 6.0):
 		print("  FAIL 카메라 p99 %.1fpx 가 중앙 %.1fpx 대비 과도하다 — 경로가 불연속인가?"
-			% [p99, med]); fails += 1
+			% [cp99, cmed]); fails += 1
 	# '한 프레임 최대 이동'으로 가드하면 안 된다. 그건 카메라 설계가 아니라
 	# 프레임 시간 안정성을 재는 값이라, OS 히치 한 번에 터진다.
 	# 실측: 같은 코드로 4회 돌려 최대값이 5.2 / 10.0 / 17.5 / 36.3px 로 흩어졌고
 	# p99 는 3.0~3.3px 로 일관됐다.
 	# 진짜 불연속이면 '여러 프레임'에 걸쳐 나타난다 — 그 비율로 본다.
 	var spikes := 0
-	for st in _cam_steps:
-		if st > med * 8.0 + 2.0:
+	for st in _cam_cont:
+		if st > cmed * 8.0 + 2.0:
 			spikes += 1
-	var spike_pct := 100.0 * spikes / maxf(float(_cam_steps.size()), 1.0)
+	var spike_pct := 100.0 * spikes / maxf(float(_cam_cont.size()), 1.0)
 	print("  카메라 스파이크 %d프레임 (%.2f%%)" % [spikes, spike_pct])
 	if spike_pct > 0.3:
 		print("  FAIL 카메라 스파이크가 %.2f%% — 산발적 히치가 아니라 구조적이다"
