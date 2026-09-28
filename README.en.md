@@ -923,6 +923,8 @@ Pause freezes `get_playback_position()` to **0**. Raw math sends clock backward 
 
 "Max frame move < 20px" was wrong — same code, 4 runs gave 5.2 / 10.0 / 17.5 / 36.3px max (p99 steady at 3.0~3.3px). That's measuring **OS frame hiccup**, not camera design. Real discontinuity spans frames, so measure **ratio of spikes** (frames > 8× median, threshold > 0.3% = fail).
 
+Measuring that ratio in px-per-frame still mixed in frame length. The CI runner (macos-15) has a frame-interval p99 of 33ms, so 22~25ms frames just under the 25ms stall threshold showed up as spikes in fast sections and failed at 0.79~1.78% — while the audio clock advanced exactly as much as the wall clock (+23.6ms / 23.6ms). The camera didn't jump; the frame was long. So each move is now **divided by the time it took (the larger of wall interval and clock advance) and scaled to the median frame interval**. Reproducing the CI condition locally with `--inject-hitch=4 --inject-ms=15` fails the old gate and passes the new one; a camera deliberately broken to snap per tile fails under both.
+
 ### Passed-Tile Fall Animation (trackDisappearAnimation)
 
 Original's `trackDisappearAnimation`. Stepped-on tiles gravity-drop, spin, fade (1.15sec). Fully fallen tiles don't render.

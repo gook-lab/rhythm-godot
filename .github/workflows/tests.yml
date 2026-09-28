@@ -1,0 +1,88 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  godot:
+    # 통합 씬은 --audio-driver CoreAudio 가 필요하다(tools/run_all_tests.sh 주석) — macOS 러너.
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.7.0
+          use-dotnet: false
+          include-templates: false
+
+      - name: 생성 도구 Python 환경
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install numpy
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
+      - name: 생성 자산 (wav 류는 gitignore)
+        run: sh tools/gen_all.sh
+
+      # 새 클론은 .godot/ 캐시가 없다. run_all_tests.sh 의 0단계와 같은 import 를
+      # 따로 돌려 두고 테스트 단계는 SKIP_IMPORT=1 로 건너뛴다(로그에 import 소음이 안 섞이게).
+      - name: 에셋 import
+        run: godot --headless --import > import.log 2>&1 || true
+
+      # 판정은 종료 코드로만 한다. Godot 가 통과한 실행에서도 찍는 ERROR·WARNING
+      # (종료 시 누수 보고, 일부러 잘못된 입력을 먹이는 테스트)은 요약 단계가 따로 분류한다.
+      - name: 전체 테스트
+        id: tests
+        run: |
+          set +e
+          SKIP_IMPORT=1 bash tools/run_all_tests.sh 2>&1 | tee test-output.log
+          code=${PIPESTATUS[0]}
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
+
+      # 카메라 게이트 자체 검증 — 러너 부하를 카메라 불연속으로 오인하지 않는지 본다.
+      #   --inject-hitch=30              : 30프레임마다 90ms 멈춤(멈춤 기준 25ms 초과)
+      #   --inject-hitch=4 --inject-ms=15: 멈춤 기준 아래의 긴 프레임 — CI 러너에서 실패하던 조건
+      # 둘 다 통과해야 한다. 경로가 진짜 끊기면 이 조건에서도 실패한다(README 카메라 가드).
+      - name: 카메라 검증 (부하 주입)
+        run: |
+          set +e
+          fail=0
+          for args in "--inject-hitch=30" "--inject-hitch=4 --inject-ms=15"; do
+            echo "== 카메라 검증: --autoplay $args =="
+            godot --headless --audio-driver CoreAudio res://tests/SmokeScene.tscn -- --autoplay $args 2>&1
+            [ "${PIPESTATUS[0]}" -eq 0 ] || fail=1
+          done > camera-load.log
+          cat camera-load.log
+          exit "$fail"
+
+      - name: 결과 요약 (실패 · 예상된 오류 · 경고 구분)
+        if: always()
+        run: |
+          for f in test-output.log camera-load.log; do
+            [ -f "$f" ] || continue
+            echo "# $f" >> "$GITHUB_STEP_SUMMARY"
+            code="${{ steps.tests.outputs.code }}"
+            if [ "$f" = test-output.log ] && [ -n "$code" ]; then
+              python3 tools/summarize_test_log.py "$f" --exit-code "$code" >> "$GITHUB_STEP_SUMMARY"
+            else
+              python3 tools/summarize_test_log.py "$f" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+      - name: 로그 보관
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-output
+          path: |
+            test-output.log
+            camera-load.log
+            import.log
