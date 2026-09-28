@@ -34,6 +34,26 @@ var clamp_hits := 0
 ## 하드 게이트는 횟수가 아니라 이 값으로 봐야 한다.
 var max_backstep_ms := 0.0
 
+## 가장 큰 역행이 난 순간의 원시값(진단용). 판정에는 쓰지 않는다.
+## prev/cur 는 직전·이번 now_ms() 호출의 {wall_us, pos_s, since_mix_s, latency_s, ms}.
+## 역행이 '믹스가 멈춘 동안 since_mix 로 외삽한 몫'인지(오디오 장치 정지·재개)
+## 아니면 재생 위치·지연 보정 자체가 뒤로 간 것인지 로그만으로 가르려는 것이다.
+var max_backstep_detail := {}
+var _prev_sample := {}
+var _peak_sample := {}   # 지금 _last_ms 를 만든 샘플
+
+## 역행 분류. ms = pos + since_mix - latency 세 항뿐이므로, 재생 위치가 뒤로 가지 않고
+## 지연 보정이 늘지 않았다면 역행은 전부 'since_mix 로 앞서 외삽한 몫이 되돌려진 것'이다.
+##   chunk    : 고점의 since_mix 가 청크 2배 이내 — 믹스 경계의 평범한 되돌림
+##   stall    : 고점의 since_mix 가 청크 2배 초과 — 믹스 스레드/오디오 장치가 멈췄다 재개(재동기화)
+##   abnormal : 재생 위치가 뒤로 갔거나 지연 보정이 늘었다 — 외삽으로 설명 안 되는 진짜 역행
+## 실측(2026-09-28, 믹서만 70ms 멈춤 재현): 고점 pos 49720.00 · since_mix 94.48ms →
+## 재개 pos 49730.67(+1청크) · since_mix 4.99 → 역행 78.8ms = 94.48 - 10.67 - 4.99.
+const BACKSTEP_EPS_MS := 0.5
+var backstep_counts := {"chunk": 0, "stall": 0, "abnormal": 0}
+var abnormal_detail := {}   # 첫 abnormal 역행의 원시값
+var _pos_steps: Array[float] = []   # 재생 위치가 전진한 폭(ms) — 믹스 청크 추정용
+
 ## 사용자 캘리브레이션 오프셋(ms).
 ##
 ## 부호 규약 (정의가 먼저, 증상은 그 다음):
@@ -78,6 +98,12 @@ func start(stream: AudioStream) -> void:
 	_last_ms = -INF
 	clamp_hits = 0
 	max_backstep_ms = 0.0
+	max_backstep_detail = {}
+	_prev_sample = {}
+	_peak_sample = {}
+	backstep_counts = {"chunk": 0, "stall": 0, "abnormal": 0}
+	abnormal_detail = {}
+	_pos_steps.clear()
 	_started_usec = Time.get_ticks_usec()
 	_player.play()
 	song_started.emit()
@@ -113,6 +139,12 @@ func seek(ms: float) -> void:
 	_last_ms = -INF                        # 단조 클램프 이력을 버린다
 	clamp_hits = 0
 	max_backstep_ms = 0.0
+	max_backstep_detail = {}
+	_prev_sample = {}
+	_peak_sample = {}
+	backstep_counts = {"chunk": 0, "stall": 0, "abnormal": 0}
+	abnormal_detail = {}
+	_pos_steps.clear()
 	_started_usec = Time.get_ticks_usec()  # 워밍업 다시 — 건너뛴 직후 클럭은 못 믿는다
 	_player.seek(maxf(ms, 0.0) / 1000.0)
 
@@ -158,11 +190,54 @@ func now_ms() -> float:
 	var since_mix := AudioServer.get_time_since_last_mix()   # 초
 	var latency := AudioServer.get_output_latency()          # 초
 	var ms := (pos + since_mix - latency) * 1000.0
+	var sample := {"wall_us": Time.get_ticks_usec(), "pos_s": pos,
+		"since_mix_s": since_mix, "latency_s": latency, "ms": ms}
+	if not _prev_sample.is_empty():
+		var step_ms := (pos - float(_prev_sample.pos_s)) * 1000.0
+		if step_ms > BACKSTEP_EPS_MS:
+			_pos_steps.append(step_ms)
+			if _pos_steps.size() > 512:
+				_pos_steps.pop_front()
 	if ms < _last_ms:
 		clamp_hits += 1
+		var kind := classify_backstep(_peak_sample, sample, mix_chunk_ms())
+		backstep_counts[kind] = int(backstep_counts[kind]) + 1
+		var detail := {"back_ms": _last_ms - ms, "last_ms": _last_ms, "kind": kind,
+			"chunk_ms": mix_chunk_ms(), "peak": _peak_sample, "prev": _prev_sample, "cur": sample}
+		if kind == "abnormal" and abnormal_detail.is_empty():
+			abnormal_detail = detail
+		if _last_ms - ms > max_backstep_ms:
+			max_backstep_detail = detail
 		max_backstep_ms = maxf(max_backstep_ms, _last_ms - ms)
+	_prev_sample = sample
+	if ms >= _last_ms:
+		_peak_sample = sample
 	_last_ms = maxf(ms, _last_ms)  # 스레드 지터로 값이 역행할 수 있다(공식 문서 경고)
 	return _last_ms
+
+
+## 믹스 청크 크기(ms) 추정 — 재생 위치가 한 번에 전진한 폭의 중앙값.
+## time_since_last_mix 의 분포는 믹서가 멈추면 같이 늘어나 오염되지만(실측 p99 80ms),
+## 위치 전진 폭은 멈춘 뒤에도 한 청크씩 나온다.
+func mix_chunk_ms() -> float:
+	if _pos_steps.is_empty():
+		return 0.0
+	var a := _pos_steps.duplicate()
+	a.sort()
+	return float(a[a.size() / 2])
+
+
+## 역행 한 건 분류(순수 함수 — 단위 테스트가 직접 부른다). peak = 역행 전 고점을 만든 샘플.
+static func classify_backstep(peak: Dictionary, cur: Dictionary, chunk_ms: float) -> String:
+	if peak.is_empty():
+		return "abnormal"
+	var dpos := (float(cur.pos_s) - float(peak.pos_s)) * 1000.0
+	var dlat := (float(cur.latency_s) - float(peak.latency_s)) * 1000.0
+	if dpos < -BACKSTEP_EPS_MS or dlat > BACKSTEP_EPS_MS:
+		return "abnormal"
+	if chunk_ms > 0.0 and float(peak.since_mix_s) * 1000.0 > chunk_ms * 2.0:
+		return "stall"
+	return "chunk"
 
 
 ## 판정에 쓰는 보정된 시각. 감시자와 입력자가 둘 다 이걸 쓴다.
