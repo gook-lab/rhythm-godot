@@ -55,6 +55,7 @@ var _pause_clk := 0.0
 const HARNESS_BUDGET_MS := 20.0
 var _sent := {}            # idx -> [보낼 때 클럭 오프셋(ms), 보낸 시각(usec)]
 var _dispatch_ms := {}     # idx -> 보낸 뒤 다음 러너 프레임까지의 벽시계 간격(ms)
+var _inputs: Array = []    # 입력 판정(delta 유한) [타일, delta] — Judge.judged 로 받는다
 var _inject_every := 0     # --inject-hitch=N --inject-ms=M: 하네스 정밀도 판정 자체 검증용
 var _inject_ms := 30
 var _frames := 0
@@ -67,6 +68,10 @@ func _ready() -> void:
 	_main.set("chart", load("res://charts/t04_mixed.tres"))
 	add_child(_main)
 	_hit = _main.get("_hit_times")
+	(_main.get_node("Judge") as Judge).judged.connect(
+		func(_v: Judge.Verdict, d: float, tile: int) -> void:
+			if is_finite(d) and _phase == "play":
+				_inputs.append([tile, d]))
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--inject-hitch="):
 			_inject_every = int(a.split("=")[1])
@@ -159,50 +164,68 @@ func _check_play() -> void:
 	var score: Score = _main.get_node("Score")
 	var ds: Array = score.deltas
 
-	# 실제로 잰 오차가 의도한 오프셋과 맞는가 (입력 경로 검증)
+	# 하네스 정밀도 — 계획한 입력마다 (보낼 때 클럭 - 목표) + 디스패치 프레임 간격.
+	# 판정 결과와 무관하게 하네스 쪽 값만으로 잰다.
+	var imprecise := 0
+	for tile in _sent:
+		var off: float = OFFSETS[int(tile) - 1]
+		var sent_off: float = float(_sent[tile][0])
+		var gap: float = float(_dispatch_ms.get(tile, 0.0))
+		if (sent_off - off) + gap >= HARNESS_BUDGET_MS:
+			imprecise += 1
+			_log.append("  SKIP   타일 %d 오프셋 %+.0f — 하네스 정밀도 %.1fms (폴링 %.1f + 디스패치 %.1f) ≥ %.0fms"
+				% [tile, off, (sent_off - off) + gap, sent_off - off, gap, HARNESS_BUDGET_MS])
+
+	# 부하와 무관하게 성립해야 하는 것(입력 경로): 입력 판정의 클럭은 어떤 송신의
+	# '보낸 시각 ~ 디스패치 프레임' 사이에 있어야 한다. 순서가 아니라 절대 클럭으로 짝짓는다 —
+	# 부하로 한 입력이 미스 기한을 넘겨 보내지면 감시자가 그 타일을 미스로 닫고 입력은 다음
+	# 타일에 판정된다(CI 실측: +52 의도가 +85 에 보내져 다음 타일 -25). 그건 하네스 지연이지
+	# 판정 경로 버그가 아니다. 반대로 판정이 캐시된 옛 클럭을 쓰면 어느 송신과도 안 맞는다.
+	# 여유 15ms = 클럭이 믹스 청크 단위로 벽시계보다 앞서 가는 몫(실측 p99 +4~5ms)의 3배.
+	var used := {}
+	var unmatched := 0
+	for jd in _inputs:
+		var at: float = _hit[int(jd[0])] + float(jd[1])
+		var hit := -1
+		for tile in _sent:
+			if used.has(tile):
+				continue
+			var c: float = _hit[int(tile)] + float(_sent[tile][0])
+			if at >= c - 1.0 and at <= c + float(_dispatch_ms.get(tile, 0.0)) + 15.0:
+				hit = int(tile)
+				break
+		if hit < 0:
+			unmatched += 1
+			_log.append("  FAIL   타일 %d 판정 %+.1f (클럭 %.1f) — 어느 송신~디스패치 구간에도 없다"
+				% [int(jd[0]), float(jd[1]), at])
+		else:
+			used[hit] = true
+	_expect(unmatched == 0 and _inputs.size() <= _sent.size(),
+		"입력 판정 %d건이 전부 송신~디스패치 구간의 클럭 (송신 %d건)" % [_inputs.size(), _sent.size()])
+
 	var intended: Array[float] = []
 	for o in OFFSETS:
 		if o < 900.0:
 			intended.append(o)
-	_expect(ds.size() == intended.size(),
-		"입력 판정 수 %d == 의도 %d" % [ds.size(), intended.size()])
-	var pressed_tiles: Array[int] = []
-	for k in OFFSETS.size():
-		if OFFSETS[k] < 900.0:
-			pressed_tiles.append(k + 1)
-	var imprecise := 0
-	for i in range(mini(ds.size(), intended.size())):
-		var err: float = absf(ds[i] - intended[i])
-		var tile := pressed_tiles[i]
-		var sent_off: float = float(_sent[tile][0]) if _sent.has(tile) else intended[i]
-		var gap: float = float(_dispatch_ms.get(tile, 0.0))
-		var precision := (sent_off - intended[i]) + gap
-		if precision >= HARNESS_BUDGET_MS:
-			imprecise += 1
-			_log.append("  SKIP   오프셋 %+.0f 의도 -> 실측 %+.1f — 하네스 정밀도 %.1fms (폴링 %.1f + 디스패치 %.1f) ≥ %.0fms"
-				% [intended[i], ds[i], precision, sent_off - intended[i], gap, HARNESS_BUDGET_MS])
-			# 부하와 무관하게 성립해야 하는 것: 판정은 보낸 뒤~디스패치 프레임 사이의 클럭으로 한다.
-			# 여유 15ms = 클럭이 믹스 청크 단위로 벽시계보다 앞서 가는 몫(실측 p99 +4~5ms)의 3배.
-			_expect(ds[i] >= sent_off - 1.0 and ds[i] <= sent_off + gap + 15.0,
-				"  오프셋 %+.0f: 판정 %+.1f 가 송신 %+.1f ~ 디스패치 %+.1f 사이"
-				% [intended[i], ds[i], sent_off, sent_off + gap])
-			continue
-		# 프레임 granularity(~7ms) + 입력 파싱 지연만큼 늦게 눌린다.
-		# 실측이 일관되게 +방향으로 치우친다(약 +11ms).
-		# 그중 ~7ms 는 이 하네스가 프레임마다 폴링해서 최대 한 프레임 늦게 누르는 탓이고,
-		# 나머지가 엔진 입력 디스패치다. 실제 키보드는 여기에 하드웨어/OS 지연이 더 붙는다.
-		# -> 캘리브레이션 슬라이더를 + 방향으로 밀어야 한다는 설계 예측과 일치한다.
-		_expect(err < 20.0, "  오프셋 %+.0f 의도 -> 실측 %+.1f (오차 %.1f)"
-			% [intended[i], ds[i], err])
-
-	# 등급이 제대로 매핑됐는가 — 띠를 겨냥할 수 없던 입력이 있으면 등급 분포는 측정이 무효다.
-	# (띠 경계 자체는 run_tests.gd t_judge_classify 가 순수 함수로 검사한다)
-	_expect(score.count_of(Judge.Verdict.TOO_LATE) == 1,
-		"무입력 1건이 TOO_LATE (%d건)" % score.count_of(Judge.Verdict.TOO_LATE))
 	if imprecise > 0:
-		_log.append("  SKIP 등급 분포 — 입력 %d건이 하네스 정밀도 %.0fms 를 넘었다(부하로 측정이 무효)"
+		# 순서·개수·등급은 '모든 입력이 제 띠를 겨냥했다'는 전제 위에서만 뜻이 있다.
+		# (띠 경계 자체는 run_tests.gd t_judge_classify 가 순수 함수로 검사한다)
+		_log.append("  SKIP 오프셋·판정 수·등급 분포 — 입력 %d건이 하네스 정밀도 %.0fms 를 넘었다(부하로 측정이 무효)"
 			% [imprecise, HARNESS_BUDGET_MS])
 	else:
+		_expect(ds.size() == intended.size(),
+			"입력 판정 수 %d == 의도 %d" % [ds.size(), intended.size()])
+		for i in range(mini(ds.size(), intended.size())):
+			var err: float = absf(ds[i] - intended[i])
+			# 프레임 granularity(~7ms) + 입력 파싱 지연만큼 늦게 눌린다.
+			# 실측이 일관되게 +방향으로 치우친다(약 +11ms).
+			# 그중 ~7ms 는 이 하네스가 프레임마다 폴링해서 최대 한 프레임 늦게 누르는 탓이고,
+			# 나머지가 엔진 입력 디스패치다. 실제 키보드는 여기에 하드웨어/OS 지연이 더 붙는다.
+			# -> 캘리브레이션 슬라이더를 + 방향으로 밀어야 한다는 설계 예측과 일치한다.
+			_expect(err < 20.0, "  오프셋 %+.0f 의도 -> 실측 %+.1f (오차 %.1f)"
+				% [intended[i], ds[i], err])
+		_expect(score.count_of(Judge.Verdict.TOO_LATE) == 1,
+			"무입력 1건이 TOO_LATE (%d건)" % score.count_of(Judge.Verdict.TOO_LATE))
 		_expect(score.count_of(Judge.Verdict.PERFECT) == 4,
 			"의도 -10ms 네 번이 PERFECT (%d건)" % score.count_of(Judge.Verdict.PERFECT))
 		_expect(score.count_of(Judge.Verdict.LATE_PERFECT) == 1,
