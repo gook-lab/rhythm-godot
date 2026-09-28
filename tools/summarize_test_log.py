@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""run_all_tests.sh 로그를 '실패 / 미분류 오류 / 예상된 오류 / 경고' 로 가른다.
+"""run_all_tests.sh 로그를 '실패 / 건너뜀 / 미분류 오류 / 예상된 오류 / 경고' 로 가른다.
 
 Godot 는 테스트가 통과해도 ERROR·WARNING 줄을 찍는다 — 종료 시 리소스 누수 보고,
 일부러 잘못된 입력을 먹이는 단위 테스트의 push_error 같은 것들이다. CI 로그에서
@@ -35,7 +35,7 @@ STEP = re.compile(r"^== (.+) ==$")
 
 def classify(lines):
     step = "(시작 전)"
-    out = {"fail": [], "unknown": [], "expected": {}, "warning": [], "camera": [], "steps": []}
+    out = {"fail": [], "skip": [], "unknown": [], "expected": {}, "warning": [], "camera": [], "steps": []}
     for raw in lines:
         line = ANSI.sub("", raw.rstrip("\n"))
         s = line.strip()
@@ -50,6 +50,10 @@ def classify(lines):
             out["camera"].append((step, s))
         if re.match(r"FAIL\b|FAILED\b", s):
             out["fail"].append((step, s))
+            continue
+        if re.match(r"SKIP\b", s):
+            # 러너가 측정 전제(부하)를 못 채워 판정을 건너뛴 항목 — 통과도 실패도 아니다
+            out["skip"].append((step, s))
             continue
         if s.startswith(("ERROR", "SCRIPT ERROR", "USER ERROR", "Parse Error")):
             for pat, why in EXPECTED:
@@ -90,6 +94,7 @@ def render(r, exit_code, passed_all):
             p("- … 외 %d줄" % (len(rows) - 40))
 
     section("실패", r["fail"])
+    section("건너뜀 — 부하로 측정 전제가 깨진 판정(통과로 세지 않음)", r["skip"])
     section("미분류 오류 — 새로 생긴 오류일 수 있음", r["unknown"])
     p("")
     p("### 예상된 오류 (%d)" % sum(v[1] for v in r["expected"].values()))
