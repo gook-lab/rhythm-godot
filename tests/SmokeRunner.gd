@@ -54,8 +54,19 @@ var _cam_cont: Array[float] = []
 # 실측(--inject-hitch=30): 스파이크 164건이 전부 멈춤 직후 1프레임에 몰렸다.
 const CATCHUP_FRAMES := 1
 var _since_hitch := 1_000_000
+var _last_wall_ms := 0.0
 var _wall_prev_us := 0                # 멈춤은 delta 가 아니라 벽시계로 잰다(delta 는 엔진이 평활한다)
 var _cam_excluded := 0
+# 스파이크 진단 — 카메라 표본마다 원인 후보를 같이 적는다.
+# !! 러너는 Main 의 부모라 _process 가 Main 보다 먼저 돈다. 그래서 이번 프레임에 읽는
+#    카메라는 Main 이 '직전 프레임'에 놓은 값이고, 그 이동에 대응하는 벽시계 간격은
+#    이번이 아니라 직전 프레임에 잰 간격이다. 클럭도 같은 이유로 AudioClock._last_ms
+#    (Main 이 직전 프레임에 읽은 값)를 부수효과 없이 읽는다.
+var _cam_wall_ms: Array[float] = []   # 그 이동이 일어난 프레임의 벽시계 간격
+var _cam_clock_ms: Array[float] = []  # 그 이동이 일어난 프레임의 오디오 클럭 전진량
+var _cam_since: Array[int] = []
+var _prev_wall_ms := 0.0
+var _clock_prev := -INF
 var _inject_hitch_every := 0          # --inject-hitch=N: N프레임마다 90ms 멈춤(게이트 자체 검증용)
 var _cam_path := 0.0                # 카메라가 실제로 지나간 총 거리
 var _cam_first := Vector2.INF
@@ -119,6 +130,8 @@ func _process(delta: float) -> void:
 		_since_hitch = 0
 	else:
 		_since_hitch += 1
+	_prev_wall_ms = _last_wall_ms
+	_last_wall_ms = float(now_us - _wall_prev_us) / 1000.0 if _wall_prev_us > 0 else 0.0
 	_wall_prev_us = now_us
 	var wall := float(Time.get_ticks_usec() - _t0) / 1_000_000.0
 	var idx: int = _main.get("_idx")
@@ -143,6 +156,10 @@ func _process(delta: float) -> void:
 	if _cam_prev != Vector2.INF:
 		var st := _cam_prev.distance_to(cam)
 		_cam_steps.append(st)
+		_cam_wall_ms.append(_prev_wall_ms)
+		var clk_now := float(AudioClock.get("_last_ms"))
+		_cam_clock_ms.append(clk_now - _clock_prev if is_finite(clk_now) and is_finite(_clock_prev) else 0.0)
+		_cam_since.append(_since_hitch)
 		if _since_hitch > CATCHUP_FRAMES:
 			_cam_cont.append(st)
 		else:
@@ -152,6 +169,7 @@ func _process(delta: float) -> void:
 		_cam_first = cam
 	_cam_prev = cam
 	_cam_last = cam
+	_clock_prev = float(AudioClock.get("_last_ms"))
 	# 액션이 화면 밖으로 나가는지. 카메라가 행성을 놓치면 이 값이 커진다.
 	var pair: Node2D = _main.get_node("World/PlanetPair")
 	_far = maxf(_far, cam.distance_to(pair.get_node("PlanetA").position))
@@ -364,6 +382,7 @@ func _finish(reached_end: bool, wall: float) -> void:
 			spikes += 1
 	var spike_pct := 100.0 * spikes / maxf(float(_cam_cont.size()), 1.0)
 	print("  카메라 스파이크 %d프레임 (%.2f%%)" % [spikes, spike_pct])
+	_print_spike_diagnosis(cmed * 8.0 + 2.0)
 	if spike_pct > 0.3:
 		print("  FAIL 카메라 스파이크가 %.2f%% — 산발적 히치가 아니라 구조적이다"
 			% spike_pct); fails += 1
@@ -418,3 +437,43 @@ func _finish(reached_end: bool, wall: float) -> void:
 			% float(AudioClock.max_backstep_ms)); fails += 1
 	print("  %s" % ("PASS" if fails == 0 else "FAILED %d" % fails))
 	get_tree().quit(fails)
+
+
+## 스파이크 원인 분류. 게이트 판정에는 쓰지 않는다 — CI 에서 실패했을 때
+## '러너가 멈췄나 / 오디오 클럭이 튀었나 / 카메라 로직이 튀었나'를 로그만으로 가르려는 것이다.
+##   멈춤    : 그 이동이 일어난 프레임의 벽시계 간격이 HITCH_MS 초과
+##   클럭점프: 벽시계는 정상인데 클럭 전진량이 벽시계 간격의 2배 초과(오디오 드라이버·믹스 청크)
+##   로직    : 벽시계·클럭 둘 다 정상인데 카메라만 튐(경로 불연속 — 진짜 버그)
+func _print_spike_diagnosis(thr: float) -> void:
+	var n_stall := 0
+	var n_clock := 0
+	var n_logic := 0
+	var shown := 0
+	var clocks: Array[float] = []
+	for i in _cam_steps.size():
+		clocks.append(_cam_clock_ms[i])
+		if _cam_steps[i] <= thr:
+			continue
+		var w := _cam_wall_ms[i]
+		var c := _cam_clock_ms[i]
+		var kind := "로직"
+		if w > HITCH_MS:
+			kind = "멈춤"; n_stall += 1
+		elif c > maxf(w * 2.0, HITCH_MS):
+			kind = "클럭점프"; n_clock += 1
+		else:
+			n_logic += 1
+		if shown < 8:
+			shown += 1
+			print("    스파이크 #%d %s: 이동 %.1fpx · 벽시계 %.1fms · 클럭 +%.1fms · 멈춤 후 %d프레임"
+				% [i, kind, _cam_steps[i], w, c, _cam_since[i]])
+	clocks.sort()
+	var walls := _cam_wall_ms.duplicate()
+	walls.sort()
+	var q := func(a: Array, f: float) -> float:
+		return float(a[mini(int(a.size() * f), a.size() - 1)]) if a.size() > 0 else 0.0
+	print("  스파이크 원인: 멈춤 %d · 클럭점프 %d · 로직 %d (임계 %.1fpx)"
+		% [n_stall, n_clock, n_logic, thr])
+	print("  프레임 간격 중앙 %.1fms p99 %.1fms 최대 %.1fms · 클럭 전진 중앙 %.1fms p99 %.1fms 최대 %.1fms"
+		% [q.call(walls, 0.5), q.call(walls, 0.99), q.call(walls, 1.0),
+		   q.call(clocks, 0.5), q.call(clocks, 0.99), q.call(clocks, 1.0)])
